@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Double entry balance book card shape -->
+    <path
+        android:fillColor="#1E293B"
+        android:pathData="M28,26 H80 A6,6 0 0 1 86,32 V76 A6,6 0 0 1 80,82 H28 A6,6 0 0 1 22,76 V32 A6,6 0 0 1 28,26 Z" />
+    <!-- Gradient accent border -->
+    <path
+        android:strokeWidth="2.5"
+        android:pathData="M28,26 H80 A6,6 0 0 1 86,32 V76 A6,6 0 0 1 80,82 H28 A6,6 0 0 1 22,76 V32 A6,6 0 0 1 28,26 Z">
+        <aapt:attr name="android:strokeColor">
+            <gradient
+                android:startX="22"
+                android:startY="26"
+                android:endX="86"
+                android:endY="82"
+                android:type="linear">
+                <item android:color="#38BDF8" android:offset="0.0" />
+                <item android:color="#818CF8" android:offset="1.0" />
+            </gradient>
+        </aapt:attr>
+    </path>
+    <!-- Center double entry balanced columns / Rupee icon -->
+    <path
+        android:fillColor="#38BDF8"
+        android:pathData="M38,36 H70 V40 H38 Z" />
+    <path
+        android:fillColor="#F8FAFC"
+        android:pathData="M38,44 H62 V48 H38 Z" />
+    <!-- Balance pillar and scales -->
+    <path
+        android:fillColor="#38BDF8"
+        android:pathData="M52,48 H56 V72 H52 Z" />
+    <!-- Dr / Cr balance plates -->
+    <path
+        android:fillColor="#10B981"
+        android:pathData="M34,62 H48 V65 A7,7 0 0 1 34,65 Z" />
+    <path
+        android:fillColor="#F59E0B"
+        android:pathData="M60,58 H74 V61 A7,7 0 0 1 60,61 Z" />
+    <!-- Checkmark dot for audited balance -->
+    <path
+        android:fillColor="#10B981"
+        android:pathData="M54,34 A3,3 0 1 0 54,40 A3,3 0 1 0 54,34 Z" />
+</vector>

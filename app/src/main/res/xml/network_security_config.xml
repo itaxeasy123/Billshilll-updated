@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Phase 6: allows plaintext HTTP only to the Android emulator's host-loopback alias, so the
+    local Python dev server (server/, default http://10.0.2.2:8000/) is reachable during
+    development without weakening cleartext policy for any real (production HTTPS) endpoint.
+    A real deployment overrides SecureStorage's base URL to an https:// host, which this config
+    does not affect - the base config below still blocks cleartext everywhere else.
+-->
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">10.0.2.2</domain>
+    </domain-config>
+    <base-config cleartextTrafficPermitted="false" />
+</network-security-config>
