@@ -6,11 +6,17 @@ import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Transaction
 import androidx.room.Update
+import com.example.accounting.application.voucher.VoucherDraftStatus
 import com.example.accounting.core.common.DrCr
 import com.example.accounting.data.local.entity.AccountingPeriodEntity
 import com.example.accounting.data.local.entity.AuditLogEntity
+import com.example.accounting.data.local.entity.BankUpiProfileEntity
 import com.example.accounting.data.local.entity.BranchEntity
 import com.example.accounting.data.local.entity.CompanyEntity
+import com.example.accounting.data.local.entity.CompanySubscriptionEntity
+import com.example.accounting.data.local.entity.VoucherDocumentReferenceEntity
+import com.example.accounting.data.local.entity.VoucherDraftEntity
+import com.example.accounting.data.local.entity.VoucherDraftLineEntity
 import com.example.accounting.data.local.entity.FinancialYearEntity
 import com.example.accounting.data.local.entity.GroupEntity
 import com.example.accounting.data.local.entity.GstFilingPeriodEntity
@@ -582,4 +588,64 @@ interface AccountingDao {
 
     @Query("DELETE FROM recurring_voucher_draft_lines WHERE draftId = :draftId")
     suspend fun deleteLinesForRecurringVoucherDraft(draftId: String)
+
+    // ==================== Phase 7J-B: Voucher Management (draft entity) ====================
+    @Query("SELECT * FROM voucher_drafts WHERE companyId = :companyId AND draftId = :draftId LIMIT 1")
+    suspend fun getVoucherDraftById(companyId: String, draftId: String): VoucherDraftEntity?
+
+    @Query("SELECT * FROM voucher_drafts WHERE companyId = :companyId AND status = :status")
+    fun getVoucherDraftsByStatus(companyId: String, status: VoucherDraftStatus): Flow<List<VoucherDraftEntity>>
+
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    suspend fun insertVoucherDraft(draft: VoucherDraftEntity)
+
+    @Update
+    suspend fun updateVoucherDraft(draft: VoucherDraftEntity)
+
+    @Query("SELECT * FROM voucher_draft_lines WHERE draftId = :draftId ORDER BY lineOrder ASC")
+    suspend fun getLinesForVoucherDraft(draftId: String): List<VoucherDraftLineEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertVoucherDraftLines(lines: List<VoucherDraftLineEntity>)
+
+    @Query("DELETE FROM voucher_draft_lines WHERE draftId = :draftId")
+    suspend fun deleteLinesForVoucherDraft(draftId: String)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertVoucherDocumentReference(reference: VoucherDocumentReferenceEntity)
+
+    @Query("SELECT * FROM voucher_document_references WHERE companyId = :companyId AND voucherId = :voucherId")
+    suspend fun getDocumentReferencesForVoucher(companyId: String, voucherId: String): List<VoucherDocumentReferenceEntity>
+
+    // ==================== Phase 7J-B: Subscription/Entitlements ====================
+    @Query("SELECT * FROM company_subscriptions WHERE companyId = :companyId AND financialYearId = :financialYearId LIMIT 1")
+    suspend fun getSubscriptionForCompanyAndFy(companyId: String, financialYearId: String): CompanySubscriptionEntity?
+
+    @Query("SELECT * FROM company_subscriptions WHERE companyId = :companyId")
+    fun getSubscriptionsForCompany(companyId: String): Flow<List<CompanySubscriptionEntity>>
+
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    suspend fun insertSubscription(subscription: CompanySubscriptionEntity)
+
+    @Update
+    suspend fun updateSubscription(subscription: CompanySubscriptionEntity)
+
+    // ==================== Phase 7J-B: Bank/UPI Profile ====================
+    @Query("SELECT * FROM bank_upi_profiles WHERE companyId = :companyId")
+    fun getBankUpiProfilesForCompany(companyId: String): Flow<List<BankUpiProfileEntity>>
+
+    @Query("SELECT * FROM bank_upi_profiles WHERE companyId = :companyId AND partyId = :partyId")
+    fun getBankUpiProfilesForParty(companyId: String, partyId: String): Flow<List<BankUpiProfileEntity>>
+
+    @Query("SELECT * FROM bank_upi_profiles WHERE companyId = :companyId AND bankUpiProfileId = :bankUpiProfileId LIMIT 1")
+    suspend fun getBankUpiProfileById(companyId: String, bankUpiProfileId: String): BankUpiProfileEntity?
+
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    suspend fun insertBankUpiProfile(profile: BankUpiProfileEntity)
+
+    @Update
+    suspend fun updateBankUpiProfile(profile: BankUpiProfileEntity)
+
+    @Query("DELETE FROM bank_upi_profiles WHERE companyId = :companyId AND bankUpiProfileId = :bankUpiProfileId")
+    suspend fun deleteBankUpiProfile(companyId: String, bankUpiProfileId: String): Int
 }

@@ -8,7 +8,7 @@ from __future__ import annotations
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from app.api.routes import auth, documents, exports, health, invoices, parties, reports, sync, trade_documents, vouchers
+from app.api.routes import auth, banking, documents, exports, health, invoices, parties, reports, subscriptions, sync, trade_documents, vouchers
 from app.domain.errors import AppError
 
 app = FastAPI(title="LedgerPrime API", version="6.0.0")
@@ -32,3 +32,5 @@ app.include_router(invoices.router, prefix="/api/v1")
 app.include_router(trade_documents.router, prefix="/api/v1")
 app.include_router(documents.router, prefix="/api/v1")
 app.include_router(exports.router, prefix="/api/v1")
+app.include_router(subscriptions.router, prefix="/api/v1")
+app.include_router(banking.router, prefix="/api/v1")

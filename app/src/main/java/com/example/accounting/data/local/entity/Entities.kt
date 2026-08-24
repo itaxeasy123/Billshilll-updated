@@ -4,6 +4,7 @@ import androidx.room.Entity
 import androidx.room.ForeignKey
 import androidx.room.Index
 import androidx.room.PrimaryKey
+import com.example.accounting.application.voucher.VoucherDraftStatus
 import com.example.accounting.core.common.DrCr
 import com.example.accounting.domain.accounting.PrimaryGroup
 import com.example.accounting.domain.accounting.SyncState
@@ -25,6 +26,7 @@ import com.example.accounting.domain.recurring.RecurringVoucherDraftStatus
 import com.example.accounting.domain.rendering.ConstitutionType
 import com.example.accounting.domain.rendering.DocumentAssetType
 import com.example.accounting.domain.rendering.TemplateStatus
+import com.example.accounting.domain.subscription.SubscriptionPlanType
 import com.example.accounting.domain.taxation.gst.GstDirection
 import com.example.accounting.domain.taxation.gst.SupplyType
 
@@ -901,4 +903,126 @@ data class RecurringVoucherDraftLineEntity(
     val amountPaise: Long,
     val narration: String,
     val lineOrder: Int
+)
+
+/**
+ * Phase 7J-B — Voucher Management application service: a review-only draft, structurally mirroring
+ * [RecurringVoucherDraftEntity]/[RecurringVoucherDraftLineEntity]'s exact pattern (see
+ * [com.example.accounting.application.voucher.VoucherDraft]'s doc comment for the full rationale).
+ * Deliberately NOT the `vouchers`/`journal_items` tables - nothing here is read by
+ * `generateTrialBalance`, `generateBalanceSheet`, GST computation, or inventory movement, so "a
+ * draft has no journal/ledger/balance/GST/inventory effect" stays a structural guarantee. Unlike
+ * `RecurringVoucherDraftEntity`, there is no unique-indexed `(scheduleId, periodKey)` slot - a
+ * generic voucher draft is created explicitly by a user or by [com.example.accounting.application.ocr.OcrSuggestionService],
+ * not by a periodic automation cycle, so there is no idempotency window to protect.
+ */
+@Entity(
+    tableName = "voucher_drafts",
+    foreignKeys = [ForeignKey(entity = CompanyEntity::class, parentColumns = ["companyId"], childColumns = ["companyId"], onDelete = ForeignKey.CASCADE)],
+    indices = [Index("companyId")]
+)
+data class VoucherDraftEntity(
+    @PrimaryKey val draftId: String,
+    val companyId: String,
+    val financialYearId: String,
+    val voucherType: VoucherType,
+    val date: String,
+    val referenceNumber: String,
+    val narration: String,
+    val status: VoucherDraftStatus,
+    val postedVoucherId: String?,
+    val createdAt: Long,
+    val updatedAt: Long
+)
+
+@Entity(
+    tableName = "voucher_draft_lines",
+    foreignKeys = [ForeignKey(entity = VoucherDraftEntity::class, parentColumns = ["draftId"], childColumns = ["draftId"], onDelete = ForeignKey.CASCADE)],
+    indices = [Index("draftId")]
+)
+data class VoucherDraftLineEntity(
+    @PrimaryKey val draftLineId: String,
+    val draftId: String,
+    val ledgerId: String,
+    val type: DrCr,
+    val amountPaise: Long,
+    val narration: String,
+    val lineOrder: Int
+)
+
+/**
+ * Phase 7J-B — links an already-uploaded [DocumentAssetEntity] (referenced by id, never duplicated)
+ * to an existing, real (already-posted) [VoucherEntity] as supporting evidence (e.g. a scanned
+ * receipt image) - metadata only, zero accounting effect. Deliberately its own small join table
+ * rather than repurposing [RenderedDocumentRecordEntity] (Phase 7D), which logs a *rendered output*
+ * of a document, not an *attached input* to one - different semantics, kept separate.
+ */
+@Entity(
+    tableName = "voucher_document_references",
+    foreignKeys = [ForeignKey(entity = CompanyEntity::class, parentColumns = ["companyId"], childColumns = ["companyId"], onDelete = ForeignKey.CASCADE)],
+    indices = [Index("companyId"), Index("voucherId")]
+)
+data class VoucherDocumentReferenceEntity(
+    @PrimaryKey val referenceId: String,
+    val companyId: String,
+    val voucherId: String,
+    val documentAssetId: String,
+    val createdAt: Long
+)
+
+/**
+ * Phase 7J-B — real persistence for [com.example.accounting.domain.subscription.CompanySubscription]
+ * (Phase 7J domain model, previously unpersisted). One row per company per financial year (the
+ * unique `(companyId, financialYearId)` index enforces this), keyed by [financialYearId] - never a
+ * raw date range - so paid validity is always derived from the referenced
+ * [com.example.accounting.domain.financialyear.FinancialYear]'s own stored `startDate`/`endDate`,
+ * never a hardcoded "1 Apr-31 Mar" literal anywhere in this entity or the service that reads it.
+ * [entitlementsCsv] is a plain comma-joined `EntitlementFeature.name` list - parsed by the
+ * repository-side `toDomain()` extension, matching [DocumentTemplateEntity.configJson]'s existing
+ * "plain column + call-site parse" convention rather than adding a generic collection converter.
+ */
+@Entity(
+    tableName = "company_subscriptions",
+    foreignKeys = [ForeignKey(entity = CompanyEntity::class, parentColumns = ["companyId"], childColumns = ["companyId"], onDelete = ForeignKey.CASCADE)],
+    indices = [Index("companyId"), Index(value = ["companyId", "financialYearId"], unique = true)]
+)
+data class CompanySubscriptionEntity(
+    @PrimaryKey val subscriptionId: String,
+    val companyId: String,
+    val financialYearId: String,
+    val planType: SubscriptionPlanType,
+    val planName: String,
+    val entitlementsCsv: String,
+    val isActive: Boolean,
+    val createdAt: Long,
+    val updatedAt: Long
+)
+
+/**
+ * Phase 7J-B — real persistence for [com.example.accounting.domain.banking.BankUpiProfile] (Phase
+ * 7G domain model, previously unpersisted). [UpiMetadata] is flattened onto this entity's `upi*`
+ * columns, the same flattening convention [BusinessProfileEntity] already uses for its own bank/UPI
+ * fields. [partyId] is null for the company's own profile, non-null when scoped to one
+ * [PartyEntity]. This is settlement/contact metadata, deliberately outside the double-entry stream
+ * - no [VoucherEntity]/[JournalItemEntity]/[LedgerEntity] foreign key anywhere in this table.
+ */
+@Entity(
+    tableName = "bank_upi_profiles",
+    foreignKeys = [ForeignKey(entity = CompanyEntity::class, parentColumns = ["companyId"], childColumns = ["companyId"], onDelete = ForeignKey.CASCADE)],
+    indices = [Index("companyId"), Index("partyId")]
+)
+data class BankUpiProfileEntity(
+    @PrimaryKey val bankUpiProfileId: String,
+    val companyId: String,
+    val partyId: String?,
+    val bankName: String,
+    val accountHolderName: String,
+    val accountNumber: String,
+    val ifscCode: String,
+    val branchName: String,
+    val upiId: String?,
+    val upiPayeeName: String,
+    val upiIsVerified: Boolean,
+    val createdAt: Long,
+    val updatedAt: Long
 )

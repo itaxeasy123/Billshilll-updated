@@ -192,7 +192,7 @@ class Phase0TestSuite {
     // ==========================================
     @Test
     fun testRoomDatabaseCreation_Invariants() {
-        // AppDatabase class must exist. Schema is now version 8 (Phase 4: inventory tables +
+        // AppDatabase class must exist. Schema is now version 9 (Phase 4: inventory tables +
         // company accountingMode/businessType columns; Phase 5: GST transactions/settlement
         // allocations/GST filing periods + voucher referenceVoucherId/paymentMode columns; Phase
         // 7A: parties/invoices/invoice_lines tables; Phase 7B: trade_documents/trade_document_lines
@@ -200,10 +200,11 @@ class Phase0TestSuite {
         // business_profiles/individual_profiles/document_assets/rendered_document_records tables;
         // Business Profile hardening: business_profiles.constitutionType/tan/udyam columns; Phase
         // 7F: recurring_voucher_schedules/recurring_voucher_lines/recurring_voucher_generation_log
-        // tables), backed by exactly seven explicit, non-destructive migrations - see
-        // testMigrationInfrastructure_ExplicitRegistry.
+        // tables; Phase 7J-B: voucher_drafts/voucher_draft_lines/voucher_document_references/
+        // company_subscriptions/bank_upi_profiles tables), backed by exactly eight explicit,
+        // non-destructive migrations - see testMigrationInfrastructure_ExplicitRegistry.
         assertNotNull(AppDatabase::class.java)
-        assertEquals(7, AppDatabase.ALL_MIGRATIONS.size)
+        assertEquals(8, AppDatabase.ALL_MIGRATIONS.size)
     }
 
     // ==========================================
@@ -213,7 +214,7 @@ class Phase0TestSuite {
     fun testMigrationInfrastructure_ExplicitRegistry() {
         val migrations = AppDatabase.ALL_MIGRATIONS
         assertNotNull("Explicit migrations array must be defined", migrations)
-        assertEquals("Version 1->2 (Phase 4), 2->3 (Phase 5), 3->4 (Phase 7A), 4->5 (Phase 7B), 5->6 (Phase 7D), 6->7 (Business Profile hardening), and 7->8 (Phase 7F: Recurring Voucher Engine) are the only migrations registered so far", 7, migrations.size)
+        assertEquals("Version 1->2 (Phase 4), 2->3 (Phase 5), 3->4 (Phase 7A), 4->5 (Phase 7B), 5->6 (Phase 7D), 6->7 (Business Profile hardening), 7->8 (Phase 7F: Recurring Voucher Engine), and 8->9 (Phase 7J-B: Management Layer) are the only migrations registered so far", 8, migrations.size)
         assertEquals(1, migrations[0].startVersion)
         assertEquals(2, migrations[0].endVersion)
         assertEquals(2, migrations[1].startVersion)
@@ -228,6 +229,8 @@ class Phase0TestSuite {
         assertEquals(7, migrations[5].endVersion)
         assertEquals(7, migrations[6].startVersion)
         assertEquals(8, migrations[6].endVersion)
+        assertEquals(8, migrations[7].startVersion)
+        assertEquals(9, migrations[7].endVersion)
     }
 
     // ==========================================
@@ -610,6 +613,28 @@ class FakeAccountingDao : AccountingDao {
     override suspend fun getLinesForRecurringVoucherDraft(draftId: String): List<com.example.accounting.data.local.entity.RecurringVoucherDraftLineEntity> = emptyList()
     override suspend fun insertRecurringVoucherDraftLines(lines: List<com.example.accounting.data.local.entity.RecurringVoucherDraftLineEntity>) {}
     override suspend fun deleteLinesForRecurringVoucherDraft(draftId: String) {}
+
+    // Phase 7J-B: Management Layer - permanent no-op stubs by design (each phase's suite only pays
+    // for real backing on the entities it needs, matching every prior "AwareDao" wrapper precedent).
+    override suspend fun getVoucherDraftById(companyId: String, draftId: String): com.example.accounting.data.local.entity.VoucherDraftEntity? = null
+    override fun getVoucherDraftsByStatus(companyId: String, status: com.example.accounting.application.voucher.VoucherDraftStatus) = flowOf(emptyList<com.example.accounting.data.local.entity.VoucherDraftEntity>())
+    override suspend fun insertVoucherDraft(draft: com.example.accounting.data.local.entity.VoucherDraftEntity) {}
+    override suspend fun updateVoucherDraft(draft: com.example.accounting.data.local.entity.VoucherDraftEntity) {}
+    override suspend fun getLinesForVoucherDraft(draftId: String): List<com.example.accounting.data.local.entity.VoucherDraftLineEntity> = emptyList()
+    override suspend fun insertVoucherDraftLines(lines: List<com.example.accounting.data.local.entity.VoucherDraftLineEntity>) {}
+    override suspend fun deleteLinesForVoucherDraft(draftId: String) {}
+    override suspend fun insertVoucherDocumentReference(reference: com.example.accounting.data.local.entity.VoucherDocumentReferenceEntity) {}
+    override suspend fun getDocumentReferencesForVoucher(companyId: String, voucherId: String): List<com.example.accounting.data.local.entity.VoucherDocumentReferenceEntity> = emptyList()
+    override suspend fun getSubscriptionForCompanyAndFy(companyId: String, financialYearId: String): com.example.accounting.data.local.entity.CompanySubscriptionEntity? = null
+    override fun getSubscriptionsForCompany(companyId: String) = flowOf(emptyList<com.example.accounting.data.local.entity.CompanySubscriptionEntity>())
+    override suspend fun insertSubscription(subscription: com.example.accounting.data.local.entity.CompanySubscriptionEntity) {}
+    override suspend fun updateSubscription(subscription: com.example.accounting.data.local.entity.CompanySubscriptionEntity) {}
+    override fun getBankUpiProfilesForCompany(companyId: String) = flowOf(emptyList<com.example.accounting.data.local.entity.BankUpiProfileEntity>())
+    override fun getBankUpiProfilesForParty(companyId: String, partyId: String) = flowOf(emptyList<com.example.accounting.data.local.entity.BankUpiProfileEntity>())
+    override suspend fun getBankUpiProfileById(companyId: String, bankUpiProfileId: String): com.example.accounting.data.local.entity.BankUpiProfileEntity? = null
+    override suspend fun insertBankUpiProfile(profile: com.example.accounting.data.local.entity.BankUpiProfileEntity) {}
+    override suspend fun updateBankUpiProfile(profile: com.example.accounting.data.local.entity.BankUpiProfileEntity) {}
+    override suspend fun deleteBankUpiProfile(companyId: String, bankUpiProfileId: String): Int = 0
 
     override fun getAuditLogsByCompany(companyId: String) = flowOf(emptyList<com.example.accounting.data.local.entity.AuditLogEntity>())
     override suspend fun insertAuditLog(log: com.example.accounting.data.local.entity.AuditLogEntity) {}

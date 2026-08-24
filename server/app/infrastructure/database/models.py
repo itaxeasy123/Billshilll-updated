@@ -491,6 +491,51 @@ class DocumentAsset(Base):
     created_at: Mapped[int] = mapped_column(Integer)
 
 
+class CompanySubscription(Base):
+    """Phase 7J-B - real persistence for the Android `domain.subscription.CompanySubscription`
+    (Phase 7J domain model, previously unpersisted on either platform). One row per company per
+    financial year (the unique constraint below enforces this), keyed by `financial_year_id` -
+    never a raw date range - so paid validity is always derived from the referenced
+    `FinancialYear`'s own `start_date`/`end_date`, never a hardcoded "1 Apr-31 Mar" literal anywhere
+    in this schema or the service that reads it. `entitlements_csv` mirrors the Android entity's own
+    plain comma-joined-string convention rather than a separate join table."""
+    __tablename__ = "company_subscriptions"
+    __table_args__ = (UniqueConstraint("company_id", "financial_year_id", name="uq_company_subscription_fy"),)
+
+    subscription_id: Mapped[str] = mapped_column(String, primary_key=True)
+    company_id: Mapped[str] = mapped_column(String, ForeignKey("companies.company_id"), index=True)
+    financial_year_id: Mapped[str] = mapped_column(String, ForeignKey("financial_years.financial_year_id"), index=True)
+    plan_type: Mapped[str] = mapped_column(String)  # FREE / PAID
+    plan_name: Mapped[str] = mapped_column(String)
+    entitlements_csv: Mapped[str] = mapped_column(String, default="")
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[int] = mapped_column(Integer)
+    updated_at: Mapped[int] = mapped_column(Integer)
+
+
+class BankUpiProfile(Base):
+    """Phase 7J-B - real persistence for the Android `domain.banking.BankUpiProfile` (Phase 7G
+    domain model, previously unpersisted on either platform). Settlement/contact metadata,
+    deliberately outside the double-entry stream - no Ledger/Voucher/JournalItem foreign key
+    anywhere in this table. `party_id` is null for the company's own profile, non-null when scoped
+    to one `Party`."""
+    __tablename__ = "bank_upi_profiles"
+
+    bank_upi_profile_id: Mapped[str] = mapped_column(String, primary_key=True)
+    company_id: Mapped[str] = mapped_column(String, ForeignKey("companies.company_id"), index=True)
+    party_id: Mapped[str | None] = mapped_column(String, ForeignKey("parties.party_id"), nullable=True, index=True)
+    bank_name: Mapped[str] = mapped_column(String, default="")
+    account_holder_name: Mapped[str] = mapped_column(String, default="")
+    account_number: Mapped[str] = mapped_column(String, default="")
+    ifsc_code: Mapped[str] = mapped_column(String, default="")
+    branch_name: Mapped[str] = mapped_column(String, default="")
+    upi_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    upi_payee_name: Mapped[str] = mapped_column(String, default="")
+    upi_is_verified: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[int] = mapped_column(Integer)
+    updated_at: Mapped[int] = mapped_column(Integer)
+
+
 class RenderedDocumentRecord(Base):
     """Phase 7D - logs which exact template version rendered a document, without adding any field
     to the frozen Invoice/TradeDocument tables - what makes 'an already-generated document must

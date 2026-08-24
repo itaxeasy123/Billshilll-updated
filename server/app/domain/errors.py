@@ -152,3 +152,11 @@ class ResourceNotFound(AppError):
 class InvalidFinancialYear(AppError):
     code = "INVALID_FINANCIAL_YEAR"
     status_code = 400
+
+
+# ==================== Phase 7J-B: Management Layer ====================
+class SubscriptionAlreadyExists(AppError):
+    """The `(company_id, financial_year_id)` unique-constraint violation case - a company already
+    has a subscription row for this financial year; use the renew path instead of create."""
+    code = "SUBSCRIPTION_ALREADY_EXISTS"
+    status_code = 409

@@ -881,3 +881,102 @@ depend on - interfaces only, no implementation, same discipline.
 - **Explicitly out of scope**: any UI, any implementation of any of the three new interfaces, any
   new draft entity/Room migration for Voucher drafts, any actual number-sequence generation logic,
   any change to `generateNextVoucherNumber`/`generateNextDocumentNumber`'s current behavior.
+
+## Phase 7J-B - Management Layer (2026-08-24)
+
+Full scope decision provided directly by the user: "Structure/services only. NO UI and NO new
+accounting engine" - turn the still-interface-only or still-nonexistent 7J/7J-A application-service
+contracts into real, compiled, tested implementations covering Invoice, Voucher, Receipt, Payment,
+Cash/Bank, Party/Ledger/Item, Settlement/Outstanding, Reports, Import/Export, Preview/Print/Share,
+OCR suggestions, QR/Barcode, Business/Profession, Subscription/Entitlements. Every new service takes
+explicit `companyId`/`financialYearId` context rather than an implicit current company/FY (a
+cross-cutting requirement added by the user before implementation began). A read-only design pass
+ran first (per this project's own established discipline), producing a file-by-file implementation
+plan the user reviewed and approved before any code was written. See `docs/53_MANAGEMENT_SERVICES.md`
+for the full per-area writeup.
+
+- **Invoice**: `InvoiceManagementServiceImpl` (real implementation of the frozen 7J-A interface) -
+  `createDraft`/`cancelInvoice` are direct delegations; `updateDraft` needed one new, narrow,
+  additive `AccountingRepository.updateDraftInvoice` function (mirrors `createDraftInvoice`'s exact
+  shape, rejects an already-posted invoice); `duplicateInvoice`/`search` needed two more small,
+  read-only repository additions (`getInvoicesForCompany`, `getInvoiceLines`) - three total
+  additions to `AccountingRepository.kt`, every other call in this phase is a read, not an edit.
+- **Voucher**: new `VoucherDraft`/`VoucherDraftLine`/`VoucherDraftStatus` (`application/voucher/`),
+  structurally mirroring `RecurringVoucherDraft`'s exact shape (Phase 7F) - deliberately not a real
+  `Voucher`, never stored in `vouchers`/`journal_items`. New Room tables `voucher_drafts`/
+  `voucher_draft_lines`/`voucher_document_references`. `VoucherManagementServiceImpl` implements the
+  frozen 7J-A interface; `postDraft` is a direct delegation to the existing, unmodified
+  `AccountingRepository.postVoucher` - never a second posting mechanism. Receipt/Payment ride on
+  this same service (posting) plus Settlement (allocation) - not a separate concept anywhere in this
+  codebase, stated explicitly rather than silently assumed.
+- **Cash/Bank, Party/Ledger/Item, Settlement/Outstanding, Reports**: `CashBankLedgerService`
+  (read-only Cash/Bank system-group ledger query, reusing an existing filter already duplicated 3x
+  elsewhere), `PartyManagementService`/`LedgerManagementService`/`StockItemManagementService`,
+  `SettlementManagementService`, `ReportManagementService` (one method per existing `generate*`
+  function) - all thin, pure-delegation facades, zero new capability.
+- **Import/Export**: real CSV/JSON parsing - `CsvJsonDataImportAdapter` (hand-rolled RFC-4180-ish
+  CSV + Moshi JSON, no new library, `data/dataimport/`) implements the frozen `DataImportAdapter`
+  interface; `DataImportManagementService.reviewAndCreate` is the only function that ever calls
+  `createParty`/`createLedger`/`createStockItem`, always per-suggestion, never for a whole file.
+  `ImportFileFormat.EXCEL` stays unimplemented (structured failure, not a silent no-op).
+  `ExportManagementService` (Android-only) wraps the existing Phase 7E `export*As` functions -
+  `server/app/api/routes/exports.py` is untouched (confirmed via `git status`).
+- **Preview/Print/Share**: `DocumentPreviewService` (Android-only) - direct delegations to
+  `assembleDocumentData`/`renderDocumentAsJson` plus the existing, unmodified `PdfDocumentRenderer`/
+  `PrintAdapter`/`ShareAdapter` (Phase 7D).
+- **OCR suggestions**: `OcrSuggestionService` - orchestration only; `OcrIngestionAdapter` itself
+  stays deliberately unimplemented this phase (no vision/ML library was in scope - flagged
+  explicitly). `reviewAndPrefillVoucherDraft` builds a `PENDING_REVIEW` voucher draft with
+  deliberately **zero lines** (OCR never identifies a ledger id - fabricating one would be an
+  accounting decision this service may not make); a human adds real lines via
+  `VoucherManagementServiceImpl.editDraft` before the draft can ever be posted.
+- **QR/Barcode**: real generation/decoding via `ZxingQrBarcodeAdapter` (new dependency
+  `com.google.zxing:core` only - no camera/Android-embedded module, no new manifest permission).
+  `generateForStockItem` builds a deterministic payload and performs a real ZXing encode as a
+  correctness check; `BarcodePayload` still carries only the raw string, never an image, matching
+  the frozen domain type. `scanImage`'s `android.graphics.BitmapFactory`-dependent decode path is a
+  documented environment limitation (see Testing below); its non-Bitmap paths and the full
+  `generateForStockItem` ZXing round-trip are genuinely tested (ZXing `core` has zero Android
+  dependency).
+- **Business/Profession**: `BusinessProfessionService` - thin, read-only catalog facade, no
+  persistence, no company attachment (an explicitly open question, not resolved here).
+- **Subscription/Entitlements**: real persistence, both platforms - new `company_subscriptions`
+  table (Android Room + Python), unique `(companyId, financialYearId)` index. **Paid validity is
+  always derived from the referenced `FinancialYear`'s own stored dates - never a hardcoded
+  "1 Apr-31 Mar" literal anywhere in either `SubscriptionManagementService` (Kotlin) or
+  `subscription_service.py` (Python)**; neither table stores a date column at all. Python gets an
+  independent domain re-implementation (`domain/subscription/subscription.py`, "duplicate the
+  principle, not the code," matching `domain/invoice/status.py`'s existing precedent). Mutation path
+  is a direct `POST/GET /api/v1/subscriptions` route, **not** Outbox/SyncEvent (a documented
+  judgment call, mirroring the 7D Business-Profile precedent - administrative metadata, no
+  offline-conflict risk).
+- **Bank/UPI Profile** (Cash/Bank settlement metadata, distinct from the Ledger-based Cash/Bank
+  facade above): real persistence, both platforms, for the previously-unpersisted Phase 7G
+  `BankUpiProfile` domain model - `BankUpiProfileService` (Android, tenant-asserted via the existing,
+  reused `TenantMismatchException`) and `banking_service.py`/`api/routes/banking.py` (Python),
+  mirroring the 7D Profile precedent exactly (own table, own routes, not Outbox-synced).
+- **Automation/Recurring**: `RecurringVoucherManagementService` - thin facade over the four
+  existing, unmodified Phase 7F draft functions.
+- **Database**: Android Room schema version 8 → 9 (`MIGRATION_8_9`: five new tables, no existing
+  table/column altered); Python Alembic revision `0004` → `0005` (`company_subscriptions`,
+  `bank_upi_profiles`). Two pre-existing `Phase0TestSuite` migration-count assertions updated for
+  the version bump - the same precedent every prior schema-version phase already set.
+- **New error code**: Python `SUBSCRIPTION_ALREADY_EXISTS` (409).
+- **Verification**: Android - `compileDebugKotlin`/`compileDebugUnitTestKotlin` clean,
+  `testDebugUnitTest` 439 tests completed (same pre-existing 4 Robolectric `DefaultSdkProvider`
+  failures - `ExampleRobolectricTest`, `GreetingScreenshotTest`, `Phase7FRecurringVoucherPostingTest`,
+  `SuspenseControlArchitectureTest` - plus one new, identically-caused, documented failure in the
+  new `Phase7JBVoucherPostingTest.kt`, which mirrors `Phase7FRecurringVoucherPostingTest.kt`'s exact
+  setup for `VoucherManagementServiceImpl.postDraft`'s real posting path; +70 new passing tests
+  across 12 new suites, zero regressions elsewhere). Python - `pytest`, 95/95 passing (81 existing +
+  14 new across `test_subscriptions_7jb.py`/`test_banking_7jb.py`). `git status` confirms zero files
+  under `presentation/` and zero lines in any frozen engine file were touched.
+- **Judgment calls made and documented, not silently assumed**: Subscription/Bank-UPI mutation path
+  is direct-route rather than Outbox-synced (both mirror the 7D precedent for the same
+  "administrative metadata, not offline-conflict-prone" reasoning); three small, additive
+  `AccountingRepository` read/update functions were needed to back `InvoiceManagementServiceImpl`
+  beyond the plan's original single-function estimate, each mirroring an existing function's exact
+  shape rather than introducing new logic.
+- **Explicitly out of scope**: real OCR/ML implementation (still contract-only, Phase 7I unchanged),
+  Excel import, GSTR/ITR filing, any UI, any change to a frozen engine, Outbox/SyncEvent sync for
+  Subscription or Bank/UPI Profile, an HSN/SAC facade (not named in this phase's scope).

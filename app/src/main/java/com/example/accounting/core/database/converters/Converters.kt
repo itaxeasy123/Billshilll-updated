@@ -1,6 +1,7 @@
 package com.example.accounting.core.database.converters
 
 import androidx.room.TypeConverter
+import com.example.accounting.application.voucher.VoucherDraftStatus
 import com.example.accounting.core.common.DrCr
 import com.example.accounting.core.common.Money
 import com.example.accounting.domain.accounting.PrimaryGroup
@@ -23,6 +24,7 @@ import com.example.accounting.domain.recurring.RecurringVoucherDraftStatus
 import com.example.accounting.domain.rendering.ConstitutionType
 import com.example.accounting.domain.rendering.DocumentAssetType
 import com.example.accounting.domain.rendering.TemplateStatus
+import com.example.accounting.domain.subscription.SubscriptionPlanType
 import com.example.accounting.domain.taxation.gst.GstDirection
 import com.example.accounting.domain.taxation.gst.SupplyType
 import java.time.LocalDate
@@ -186,4 +188,17 @@ class RoomConverters {
 
     @TypeConverter
     fun toDocumentStatus(value: String): DocumentStatus = try { DocumentStatus.valueOf(value) } catch (e: Exception) { DocumentStatus.DRAFT }
+
+    // ==================== Phase 7J-B: Management Layer ====================
+    @TypeConverter
+    fun fromVoucherDraftStatus(value: VoucherDraftStatus): String = value.name
+
+    @TypeConverter
+    fun toVoucherDraftStatus(value: String): VoucherDraftStatus = try { VoucherDraftStatus.valueOf(value) } catch (e: Exception) { VoucherDraftStatus.PENDING_REVIEW }
+
+    @TypeConverter
+    fun fromSubscriptionPlanType(value: SubscriptionPlanType): String = value.name
+
+    @TypeConverter
+    fun toSubscriptionPlanType(value: String): SubscriptionPlanType = try { SubscriptionPlanType.valueOf(value) } catch (e: Exception) { SubscriptionPlanType.FREE }
 }

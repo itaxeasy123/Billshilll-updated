@@ -11,9 +11,11 @@ import com.example.accounting.core.database.converters.RoomConverters
 import com.example.accounting.data.local.dao.AccountingDao
 import com.example.accounting.data.local.entity.AccountingPeriodEntity
 import com.example.accounting.data.local.entity.AuditLogEntity
+import com.example.accounting.data.local.entity.BankUpiProfileEntity
 import com.example.accounting.data.local.entity.BranchEntity
 import com.example.accounting.data.local.entity.BusinessProfileEntity
 import com.example.accounting.data.local.entity.CompanyEntity
+import com.example.accounting.data.local.entity.CompanySubscriptionEntity
 import com.example.accounting.data.local.entity.DocumentAssetEntity
 import com.example.accounting.data.local.entity.DocumentTemplateEntity
 import com.example.accounting.data.local.entity.FinancialYearEntity
@@ -37,6 +39,9 @@ import com.example.accounting.data.local.entity.StockItemEntity
 import com.example.accounting.data.local.entity.StockMovementEntity
 import com.example.accounting.data.local.entity.TradeDocumentEntity
 import com.example.accounting.data.local.entity.TradeDocumentLineEntity
+import com.example.accounting.data.local.entity.VoucherDocumentReferenceEntity
+import com.example.accounting.data.local.entity.VoucherDraftEntity
+import com.example.accounting.data.local.entity.VoucherDraftLineEntity
 import com.example.accounting.data.local.entity.VoucherEntity
 import com.example.accounting.data.local.entity.VoucherStockLineEntity
 
@@ -71,9 +76,14 @@ import com.example.accounting.data.local.entity.VoucherStockLineEntity
         RecurringVoucherScheduleEntity::class,
         RecurringVoucherLineEntity::class,
         RecurringVoucherDraftEntity::class,
-        RecurringVoucherDraftLineEntity::class
+        RecurringVoucherDraftLineEntity::class,
+        VoucherDraftEntity::class,
+        VoucherDraftLineEntity::class,
+        VoucherDocumentReferenceEntity::class,
+        CompanySubscriptionEntity::class,
+        BankUpiProfileEntity::class
     ],
-    version = 8,
+    version = 9,
     exportSchema = false
 )
 @TypeConverters(RoomConverters::class)
@@ -638,6 +648,120 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
-        val ALL_MIGRATIONS: Array<Migration> = arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8)
+        /**
+         * Migration 8 -> 9 (Phase 7J-B: Management Layer).
+         * Purely additive: five new tables only, no existing table/column altered, dropped, or
+         * renamed. `voucher_drafts`/`voucher_draft_lines` mirror `recurring_voucher_drafts`/
+         * `recurring_voucher_draft_lines`'s exact shape - deliberately not the `vouchers`/
+         * `journal_items` tables, so a draft has no journal/ledger/balance/GST/inventory effect
+         * until explicitly posted through the existing, unmodified `postVoucher`.
+         * `voucher_document_references` is a thin metadata join table (an attached supporting
+         * document, never a rendered output - see `RenderedDocumentRecordEntity`, left untouched).
+         * `company_subscriptions` gives `CompanySubscription` (Phase 7J) its first real persistence
+         * - the unique `(companyId, financialYearId)` index enforces one row per company per FY;
+         * paid validity is always derived from the referenced FinancialYear's own stored dates, no
+         * date column is stored here at all. `bank_upi_profiles` gives `BankUpiProfile` (Phase 7G)
+         * its first real persistence - settlement/contact metadata, structurally outside the
+         * double-entry stream (no Ledger/Voucher/JournalItem foreign key). Satisfies Invariant 21
+         * (no destructive fallback migration).
+         */
+        val MIGRATION_8_9 = object : Migration(8, 9) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS voucher_drafts (
+                        draftId TEXT NOT NULL PRIMARY KEY,
+                        companyId TEXT NOT NULL,
+                        financialYearId TEXT NOT NULL,
+                        voucherType TEXT NOT NULL,
+                        date TEXT NOT NULL,
+                        referenceNumber TEXT NOT NULL,
+                        narration TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        postedVoucherId TEXT,
+                        createdAt INTEGER NOT NULL,
+                        updatedAt INTEGER NOT NULL,
+                        FOREIGN KEY(companyId) REFERENCES companies(companyId) ON DELETE CASCADE
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_voucher_drafts_companyId ON voucher_drafts(companyId)")
+
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS voucher_draft_lines (
+                        draftLineId TEXT NOT NULL PRIMARY KEY,
+                        draftId TEXT NOT NULL,
+                        ledgerId TEXT NOT NULL,
+                        type TEXT NOT NULL,
+                        amountPaise INTEGER NOT NULL,
+                        narration TEXT NOT NULL,
+                        lineOrder INTEGER NOT NULL,
+                        FOREIGN KEY(draftId) REFERENCES voucher_drafts(draftId) ON DELETE CASCADE
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_voucher_draft_lines_draftId ON voucher_draft_lines(draftId)")
+
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS voucher_document_references (
+                        referenceId TEXT NOT NULL PRIMARY KEY,
+                        companyId TEXT NOT NULL,
+                        voucherId TEXT NOT NULL,
+                        documentAssetId TEXT NOT NULL,
+                        createdAt INTEGER NOT NULL,
+                        FOREIGN KEY(companyId) REFERENCES companies(companyId) ON DELETE CASCADE
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_voucher_document_references_companyId ON voucher_document_references(companyId)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_voucher_document_references_voucherId ON voucher_document_references(voucherId)")
+
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS company_subscriptions (
+                        subscriptionId TEXT NOT NULL PRIMARY KEY,
+                        companyId TEXT NOT NULL,
+                        financialYearId TEXT NOT NULL,
+                        planType TEXT NOT NULL,
+                        planName TEXT NOT NULL,
+                        entitlementsCsv TEXT NOT NULL DEFAULT '',
+                        isActive INTEGER NOT NULL,
+                        createdAt INTEGER NOT NULL,
+                        updatedAt INTEGER NOT NULL,
+                        FOREIGN KEY(companyId) REFERENCES companies(companyId) ON DELETE CASCADE
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_company_subscriptions_companyId ON company_subscriptions(companyId)")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_company_subscriptions_companyId_financialYearId ON company_subscriptions(companyId, financialYearId)")
+
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS bank_upi_profiles (
+                        bankUpiProfileId TEXT NOT NULL PRIMARY KEY,
+                        companyId TEXT NOT NULL,
+                        partyId TEXT,
+                        bankName TEXT NOT NULL,
+                        accountHolderName TEXT NOT NULL,
+                        accountNumber TEXT NOT NULL,
+                        ifscCode TEXT NOT NULL,
+                        branchName TEXT NOT NULL,
+                        upiId TEXT,
+                        upiPayeeName TEXT NOT NULL DEFAULT '',
+                        upiIsVerified INTEGER NOT NULL DEFAULT 0,
+                        createdAt INTEGER NOT NULL,
+                        updatedAt INTEGER NOT NULL,
+                        FOREIGN KEY(companyId) REFERENCES companies(companyId) ON DELETE CASCADE
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_bank_upi_profiles_companyId ON bank_upi_profiles(companyId)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_bank_upi_profiles_partyId ON bank_upi_profiles(partyId)")
+            }
+        }
+
+        val ALL_MIGRATIONS: Array<Migration> = arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9)
     }
 }
