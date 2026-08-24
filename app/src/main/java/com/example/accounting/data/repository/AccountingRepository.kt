@@ -751,6 +751,26 @@ class AccountingRepository(
             )
         }
 
+    /** Domain-mapped company+FY GST transaction listing (Phase 7J UI, one of the 3 pre-approved
+     * backend additions) - mirrors [getGstTransactionsForVoucher]'s exact mapping, just scoped by
+     * `dao.getGstTransactionsForCompanyFY` (already used raw by [generateGSTSummary]) instead of by
+     * voucher. Read-only, no new tax calculation - the sole consumer is
+     * [com.example.accounting.application.reports.ReportManagementService]'s HSN/SAC grouping. */
+    suspend fun getGstTransactionsForCompanyFY(companyId: String, fyId: String): List<GstTransaction> =
+        dao.getGstTransactionsForCompanyFY(companyId, fyId).map {
+            GstTransaction(
+                gstTransactionId = it.gstTransactionId, companyId = it.companyId, financialYearId = it.financialYearId,
+                voucherId = it.voucherId, voucherType = it.voucherType, partyLedgerId = it.partyLedgerId,
+                partyGstin = it.partyGstin, placeOfSupply = it.placeOfSupply, supplyType = it.supplyType,
+                itemId = it.itemId, hsnSacCode = it.hsnSacCode,
+                quantity = it.quantityRaw?.let { q -> com.example.accounting.core.common.Quantity(q) },
+                taxableAmount = Money.fromPaise(it.taxableAmountPaise), gstRatePercent = it.gstRatePercent,
+                cgst = Money.fromPaise(it.cgstPaise), sgst = Money.fromPaise(it.sgstPaise),
+                igst = Money.fromPaise(it.igstPaise), cess = Money.fromPaise(it.cessPaise),
+                direction = it.direction, lineOrder = it.lineOrder
+            )
+        }
+
     suspend fun getStockLinesForVoucher(companyId: String, voucherId: String): List<VoucherStockLine> {
         val items = dao.getStockItemsByCompany(companyId).first().associateBy { it.itemId }
         return dao.getStockLinesForVoucher(voucherId).map {

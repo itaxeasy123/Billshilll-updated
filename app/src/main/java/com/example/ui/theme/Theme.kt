@@ -11,12 +11,14 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 
+// Phase 7J UI: Royal Purple + Off-White, both light and dark - built the same session so the app
+// never presents two visually unrelated products depending on system theme.
 private val DarkColorScheme =
   darkColorScheme(
-    primary = PrimaryBlueLight,
+    primary = RoyalPurpleLight,
     onPrimary = Color.White,
-    primaryContainer = PrimaryBlueDark,
-    onPrimaryContainer = Color(0xFFDBEAFE),
+    primaryContainer = RoyalPurpleDark,
+    onPrimaryContainer = RoyalPurpleContainer,
     secondary = EmeraldLight,
     onSecondary = Color.White,
     secondaryContainer = Color(0xFF064E3B),
@@ -25,25 +27,25 @@ private val DarkColorScheme =
     onTertiary = Color.Black,
     tertiaryContainer = Color(0xFF78350F),
     onTertiaryContainer = AmberContainer,
-    background = Navy900,
-    onBackground = Slate50,
-    surface = Slate800,
-    onSurface = Slate50,
-    surfaceVariant = Color(0xFF334155),
-    onSurfaceVariant = Slate200,
+    background = DeepPurpleBackground,
+    onBackground = OffWhiteOnDark,
+    surface = DeepPurpleSurface,
+    onSurface = OffWhiteOnDark,
+    surfaceVariant = DeepPurpleSurfaceVariant,
+    onSurfaceVariant = PurpleGrayOutline,
     error = CrimsonLight,
     onError = Color.White,
     errorContainer = Color(0xFF7F1D1D),
     onErrorContainer = CrimsonContainer,
-    outline = Slate600
+    outline = PurpleGrayOutlineDark
   )
 
 private val LightColorScheme =
   lightColorScheme(
-    primary = PrimaryBlue,
+    primary = RoyalPurple,
     onPrimary = Color.White,
-    primaryContainer = Color(0xFFDBEAFE),
-    onPrimaryContainer = PrimaryBlueDark,
+    primaryContainer = RoyalPurpleContainer,
+    onPrimaryContainer = RoyalPurpleOnContainer,
     secondary = EmeraldCredit,
     onSecondary = Color.White,
     secondaryContainer = EmeraldContainer,
@@ -52,17 +54,17 @@ private val LightColorScheme =
     onTertiary = Color.White,
     tertiaryContainer = AmberContainer,
     onTertiaryContainer = Color(0xFF78350F),
-    background = Slate50,
-    onBackground = Navy900,
-    surface = Color.White,
-    onSurface = Navy900,
-    surfaceVariant = Slate100,
-    onSurfaceVariant = Slate600,
+    background = OffWhite,
+    onBackground = CharcoalText,
+    surface = OffWhiteSurface,
+    onSurface = CharcoalText,
+    surfaceVariant = OffWhiteSurfaceVariant,
+    onSurfaceVariant = CharcoalOnSurfaceVariant,
     error = CrimsonDebit,
     onError = Color.White,
     errorContainer = CrimsonContainer,
     onErrorContainer = Color(0xFF7F1D1D),
-    outline = Slate200
+    outline = PurpleGrayOutline
   )
 
 @Composable

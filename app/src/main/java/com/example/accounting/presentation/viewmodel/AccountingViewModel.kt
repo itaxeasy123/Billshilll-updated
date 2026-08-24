@@ -6,13 +6,35 @@ import androidx.lifecycle.viewModelScope
 import com.example.accounting.automation.scheduler.AccountingScheduler
 import com.example.accounting.automation.scheduler.SchedulerPort
 import com.example.accounting.automation.scheduler.work.WorkManagerSchedulerPort
+import com.example.accounting.application.automation.RecurringVoucherManagementService
+import com.example.accounting.application.banking.BankUpiProfileService
+import com.example.accounting.application.banking.CashBankLedgerService
+import com.example.accounting.application.document.DocumentPreviewService
+import com.example.accounting.application.export.ExportManagementService
+import com.example.accounting.application.imports.DataImportManagementService
+import com.example.accounting.application.invoice.InvoiceManagementServiceImpl
+import com.example.accounting.application.ledger.LedgerManagementService
+import com.example.accounting.application.ocr.OcrSuggestionService
+import com.example.accounting.application.party.PartyManagementService
+import com.example.accounting.application.profession.BusinessProfessionService
+import com.example.accounting.application.profile.ProfileApplicationService
+import com.example.accounting.application.qrbarcode.QrBarcodeManagementService
+import com.example.accounting.application.reports.HsnSacSummaryRow
+import com.example.accounting.application.reports.ReportManagementService
+import com.example.accounting.application.settlement.SettlementManagementService
+import com.example.accounting.application.subscription.SubscriptionManagementService
+import com.example.accounting.application.voucher.VoucherDraft
+import com.example.accounting.application.voucher.VoucherDraftStatus
+import com.example.accounting.application.voucher.VoucherManagementServiceImpl
 import com.example.accounting.core.common.AccountingResult
 import com.example.accounting.core.common.DrCr
 import com.example.accounting.core.common.Money
 import com.example.accounting.core.database.AppDatabase
 import com.example.accounting.core.network.NetworkMonitor
 import com.example.accounting.core.sync.OutboxProcessor
+import com.example.accounting.data.dataimport.CsvJsonDataImportAdapter
 import com.example.accounting.data.local.entity.OutboxSyncEntity
+import com.example.accounting.data.qrbarcode.ZxingQrBarcodeAdapter
 import com.example.accounting.data.repository.AccountingRepository
 import com.example.accounting.domain.accounting.AccountGroup
 import com.example.accounting.domain.accounting.Branch
@@ -21,15 +43,37 @@ import com.example.accounting.domain.accounting.Ledger
 import com.example.accounting.domain.accounting.Voucher
 import com.example.accounting.domain.accounting.VoucherType
 import com.example.accounting.domain.audit.AuditLog
+import com.example.accounting.domain.banking.BankUpiProfile
+import com.example.accounting.domain.banking.UpiMetadata
 import com.example.accounting.domain.company.Company
+import com.example.accounting.domain.dataimport.ImportFileFormat
+import com.example.accounting.domain.dataimport.ImportResult
+import com.example.accounting.domain.dataimport.ImportRowSuggestion
+import com.example.accounting.domain.dataimport.ImportSuggestionType
 import com.example.accounting.domain.financialyear.AccountingPeriod
 import com.example.accounting.domain.financialyear.FinancialYear
 import com.example.accounting.domain.inventory.StockItem
+import com.example.accounting.domain.invoice.Invoice
+import com.example.accounting.domain.ocr.OcrExtractionResult
+import com.example.accounting.domain.party.Party
+import com.example.accounting.domain.party.PartyEntityType
+import com.example.accounting.domain.party.PartyRole
+import com.example.accounting.domain.qrbarcode.BarcodeGenerationResult
+import com.example.accounting.domain.qrbarcode.BarcodeScanSuggestion
 import com.example.accounting.domain.reports.BalanceSheetReport
+import com.example.accounting.domain.reports.CashFlowReport
 import com.example.accounting.domain.reports.GSTSummaryReport
 import com.example.accounting.domain.reports.LedgerStatementReport
+import com.example.accounting.domain.reports.OutstandingReport
 import com.example.accounting.domain.reports.ProfitAndLossReport
+import com.example.accounting.domain.reports.RatioAnalysisReport
 import com.example.accounting.domain.reports.TrialBalanceReport
+import com.example.accounting.domain.rendering.BusinessProfile
+import com.example.accounting.domain.rendering.DocumentAssetType
+import com.example.accounting.domain.rendering.IndividualProfile
+import com.example.accounting.domain.subscription.CompanySubscription
+import com.example.accounting.domain.subscription.EntitlementFeature
+import com.example.accounting.domain.subscription.SubscriptionPlanType
 import com.example.accounting.domain.taxation.gst.GSTRules
 import com.example.accounting.domain.taxation.gst.GstCalculationEngine
 import com.example.accounting.domain.taxation.gst.GstDirection
@@ -51,19 +95,24 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import java.io.File
 import java.time.LocalDate
 import java.util.UUID
 
+/** Phase 7J UI: exactly 5 top-level destinations (Home/Sales/Purchases/Money/Reports), per the
+ * user-supplied UX spec's bottom-navigation section. Every other area (Party, Items, Cash/Bank,
+ * Outstanding, Profile, Import/OCR, Subscription, Search) is reached through one of these 5 or a
+ * top-bar entry point - never a 6th+ tab. */
 enum class NavigationTab {
-    DASHBOARD,
-    DAYBOOK,
-    CHART_OF_ACCOUNTS,
-    REPORTS,
-    SETTINGS_SYNC
+    HOME,
+    SALES,
+    PURCHASES,
+    MONEY,
+    REPORTS
 }
 
 data class AccountingUiState(
-    val selectedTab: NavigationTab = NavigationTab.DASHBOARD,
+    val selectedTab: NavigationTab = NavigationTab.HOME,
     val currentRoute: AppRoute = AppRoute.Dashboard,
     val companies: List<Company> = emptyList(),
     val currentCompany: Company? = null,
@@ -91,7 +140,27 @@ data class AccountingUiState(
     val stockItems: List<StockItem> = emptyList(),
     val outstandingInvoices: List<OutstandingInvoice> = emptyList(),
     val gstFilingPeriods: List<GstFilingPeriod> = emptyList(),
-    val isCloudSyncLoggedIn: Boolean = false
+    val isCloudSyncLoggedIn: Boolean = false,
+
+    // ==== Phase 7J UI additions ====
+    val parties: List<Party> = emptyList(),
+    val invoices: List<Invoice> = emptyList(),
+    val bankUpiProfiles: List<BankUpiProfile> = emptyList(),
+    val businessProfile: BusinessProfile? = null,
+    val individualProfile: IndividualProfile? = null,
+    val currentSubscription: CompanySubscription? = null,
+    val voucherDraftsPendingReview: List<VoucherDraft> = emptyList(),
+    val outstandingReport: OutstandingReport? = null,
+    val receivablesReport: OutstandingReport? = null,
+    val payablesReport: OutstandingReport? = null,
+    val cashFlowReport: CashFlowReport? = null,
+    val ratioAnalysisReport: RatioAnalysisReport? = null,
+    val hsnSacSummary: List<HsnSacSummaryRow> = emptyList(),
+    val lastImportResult: ImportResult? = null,
+    val lastImportRowOutcomes: Map<Int, String> = emptyMap(),
+    val lastOcrExtraction: OcrExtractionResult? = null,
+    val lastBarcodeGeneration: BarcodeGenerationResult? = null,
+    val lastBarcodeScan: BarcodeScanSuggestion? = null
 )
 
 class AccountingViewModel(application: Application) : AndroidViewModel(application) {
@@ -108,6 +177,30 @@ class AccountingViewModel(application: Application) : AndroidViewModel(applicati
     val scheduler = AccountingScheduler(db.accountingDao(), repository, outboxProcessor)
     private val schedulerPort: SchedulerPort = WorkManagerSchedulerPort(application)
     private val authRepository = com.example.accounting.core.network.AuthRepository(application)
+
+    // ==== Phase 7J UI: application-service layer (Phase 7J-B, frozen) - every new screen calls
+    // through these, never AccountingDao/AccountingRepository directly, except where a thin
+    // facade doesn't yet exist for an already-established repository call (matching this
+    // ViewModel's own pre-existing pattern, e.g. postQuickVoucher/postTradingDocument). ====
+    private val partyService = PartyManagementService(repository)
+    private val ledgerService = LedgerManagementService(repository)
+    private val voucherDraftService = VoucherManagementServiceImpl(db.accountingDao(), repository)
+    private val invoiceService = InvoiceManagementServiceImpl(repository)
+    private val settlementService = SettlementManagementService(repository)
+    private val reportService = ReportManagementService(repository)
+    private val cashBankService = CashBankLedgerService(repository)
+    private val bankUpiService = BankUpiProfileService(db.accountingDao())
+    private val subscriptionService = SubscriptionManagementService(db.accountingDao())
+    private val profileService = ProfileApplicationService(repository)
+    private val documentPreviewService = DocumentPreviewService(repository)
+    private val exportService = ExportManagementService(repository)
+    private val recurringVoucherService = RecurringVoucherManagementService(repository)
+    private val businessProfessionService = BusinessProfessionService()
+    private val dataImportService = DataImportManagementService(CsvJsonDataImportAdapter(db.accountingDao()), repository)
+    private val qrBarcodeService = QrBarcodeManagementService(repository, ZxingQrBarcodeAdapter(db.accountingDao()))
+    // OcrIngestionAdapter is deliberately left unimplemented (Phase 7J-B) - null adapter here
+    // means requestExtraction always fails gracefully, never a crash. Not a bug to fix.
+    private val ocrService = OcrSuggestionService(null, db.accountingDao())
 
     private val _uiState = MutableStateFlow(AccountingUiState(isCloudSyncLoggedIn = authRepository.isLoggedIn()))
     val uiState: StateFlow<AccountingUiState> = _uiState.asStateFlow()
@@ -144,17 +237,24 @@ class AccountingViewModel(application: Application) : AndroidViewModel(applicati
             router.currentRoute.collect { route ->
                 _uiState.update { it.copy(currentRoute = route) }
                 when (route) {
-                    is AppRoute.Dashboard -> _uiState.update { it.copy(selectedTab = NavigationTab.DASHBOARD) }
-                    is AppRoute.DayBook -> _uiState.update { it.copy(selectedTab = NavigationTab.DAYBOOK) }
-                    is AppRoute.ChartOfAccounts -> _uiState.update { it.copy(selectedTab = NavigationTab.CHART_OF_ACCOUNTS) }
+                    is AppRoute.Dashboard -> _uiState.update { it.copy(selectedTab = NavigationTab.HOME) }
+                    is AppRoute.DayBook -> _uiState.update { it.copy(selectedTab = NavigationTab.HOME) }
+                    is AppRoute.ChartOfAccounts -> _uiState.update { it.copy(selectedTab = NavigationTab.HOME) }
+                    is AppRoute.Sales -> _uiState.update { it.copy(selectedTab = NavigationTab.SALES) }
+                    is AppRoute.Purchases -> _uiState.update { it.copy(selectedTab = NavigationTab.PURCHASES) }
+                    is AppRoute.Money -> _uiState.update { it.copy(selectedTab = NavigationTab.MONEY) }
                     is AppRoute.Reports -> {
                         _uiState.update { it.copy(selectedTab = NavigationTab.REPORTS) }
                         refreshFinancialReports()
+                        refreshReportsCenterExtras()
                     }
-                    is AppRoute.SettingsAndSync -> _uiState.update { it.copy(selectedTab = NavigationTab.SETTINGS_SYNC) }
-                    is AppRoute.LedgerStatement -> {
-                        _uiState.update { it.copy(selectedTab = NavigationTab.CHART_OF_ACCOUNTS) }
-                    }
+                    is AppRoute.SettingsAndSync -> { /* reached from Profile - keep whatever tab was active */ }
+                    is AppRoute.LedgerStatement -> { /* keep whatever tab was active (Home or Reports) */ }
+                    is AppRoute.Parties -> { /* keep whatever tab was active (Sales or Purchases) */ }
+                    is AppRoute.Profile -> { /* top-bar entry point - keep whatever tab was active */ }
+                    is AppRoute.Subscription -> { loadSubscription() }
+                    is AppRoute.DataTools -> { /* reached from Profile - keep whatever tab was active */ }
+                    is AppRoute.Search -> { /* top-bar entry point - keep whatever tab was active */ }
                 }
             }
         }
@@ -241,6 +341,35 @@ class AccountingViewModel(application: Application) : AndroidViewModel(applicati
                     _uiState.update { it.copy(gstFilingPeriods = periods) }
                 }
             }
+
+            // ==== Phase 7J UI additions ====
+            launch {
+                partyService.getParties(companyId).collect { parties ->
+                    _uiState.update { it.copy(parties = parties) }
+                }
+            }
+
+            launch {
+                repository.getInvoicesForCompany(companyId).collect { invoices ->
+                    _uiState.update { it.copy(invoices = invoices) }
+                }
+            }
+
+            launch {
+                bankUpiService.list(companyId).collect { profiles ->
+                    _uiState.update { it.copy(bankUpiProfiles = profiles) }
+                }
+            }
+
+            launch {
+                voucherDraftService.listDrafts(companyId, VoucherDraftStatus.PENDING_REVIEW).collect { drafts ->
+                    _uiState.update { it.copy(voucherDraftsPendingReview = drafts) }
+                }
+            }
+
+            launch {
+                _uiState.update { it.copy(businessProfile = profileService.getBusinessProfile(companyId), individualProfile = profileService.getIndividualProfile(companyId)) }
+            }
         }
     }
 
@@ -265,11 +394,11 @@ class AccountingViewModel(application: Application) : AndroidViewModel(applicati
 
     fun selectTab(tab: NavigationTab) {
         val destination = when (tab) {
-            NavigationTab.DASHBOARD -> AppRoute.Dashboard
-            NavigationTab.DAYBOOK -> AppRoute.DayBook
-            NavigationTab.CHART_OF_ACCOUNTS -> AppRoute.ChartOfAccounts
+            NavigationTab.HOME -> AppRoute.Dashboard
+            NavigationTab.SALES -> AppRoute.Sales
+            NavigationTab.PURCHASES -> AppRoute.Purchases
+            NavigationTab.MONEY -> AppRoute.Money
             NavigationTab.REPORTS -> AppRoute.Reports
-            NavigationTab.SETTINGS_SYNC -> AppRoute.SettingsAndSync
         }
         router.navigate(destination)
     }
@@ -943,6 +1072,367 @@ class AccountingViewModel(application: Application) : AndroidViewModel(applicati
         viewModelScope.launch {
             _snackbarEvents.emit(msg)
         }
+    }
+
+    // ==================== Phase 7J UI additions ====================
+
+    private fun currentRequestingProfile(comp: Company): BusinessProfile =
+        _uiState.value.businessProfile ?: BusinessProfile(businessProfileId = "", companyId = comp.companyId, businessName = comp.name)
+
+    private fun sha256(bytes: ByteArray): String =
+        java.security.MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+
+    // ---- Party (Customer/Supplier) ----
+
+    fun createParty(
+        displayName: String,
+        role: PartyRole,
+        entityType: PartyEntityType,
+        gstin: String = "",
+        phone: String = "",
+        email: String = "",
+        address: String = ""
+    ) {
+        viewModelScope.launch {
+            val comp = _uiState.value.currentCompany ?: return@launch
+            val ledgerTemplate = Ledger(
+                ledgerId = "", companyId = comp.companyId, groupId = "", name = displayName,
+                gstin = gstin, phone = phone, email = email, address = address, stateCode = comp.stateCode
+            )
+            val result = partyService.createParty(
+                Party(partyId = "", companyId = comp.companyId, ledgerId = "", role = role, entityType = entityType, displayName = displayName),
+                ledgerTemplate
+            )
+            when (result) {
+                is AccountingResult.Success -> emitMessage("${if (role == PartyRole.CUSTOMER) "Customer" else "Supplier"} '$displayName' added")
+                is AccountingResult.Failure -> emitMessage("Failed to add: ${result.error.message}")
+            }
+        }
+    }
+
+    // ---- Cash/Bank/UPI ----
+
+    fun createBankUpiProfile(
+        bankName: String,
+        accountHolderName: String,
+        accountNumber: String,
+        ifscCode: String,
+        branchName: String = "",
+        upiId: String = "",
+        upiPayeeName: String = "",
+        partyId: String? = null
+    ) {
+        viewModelScope.launch {
+            val comp = _uiState.value.currentCompany ?: return@launch
+            val profile = BankUpiProfile(
+                bankUpiProfileId = "", companyId = comp.companyId, partyId = partyId, bankName = bankName,
+                accountHolderName = accountHolderName, accountNumber = accountNumber, ifscCode = ifscCode,
+                branchName = branchName, upi = if (upiId.isNotBlank()) UpiMetadata(upiId = upiId, payeeName = upiPayeeName) else null
+            )
+            when (val result = bankUpiService.create(comp.companyId, profile)) {
+                is AccountingResult.Success -> emitMessage("Bank/UPI profile added")
+                is AccountingResult.Failure -> emitMessage("Failed: ${result.error.message}")
+            }
+        }
+    }
+
+    fun deleteBankUpiProfile(profileId: String) {
+        viewModelScope.launch {
+            val comp = _uiState.value.currentCompany ?: return@launch
+            when (val result = bankUpiService.delete(comp.companyId, profileId)) {
+                is AccountingResult.Success -> emitMessage("Bank/UPI profile removed")
+                is AccountingResult.Failure -> emitMessage("Failed: ${result.error.message}")
+            }
+        }
+    }
+
+    fun cashAndBankLedgers(): List<Ledger> {
+        val ledgers = _uiState.value.ledgers
+        return ledgers.filter {
+            it.groupId.startsWith(com.example.accounting.domain.accounting.StandardSystemGroups.BANK_GROUP_ID) ||
+                it.groupId.startsWith(com.example.accounting.domain.accounting.StandardSystemGroups.CASH_GROUP_ID)
+        }
+    }
+
+    // ---- Voucher Draft review (OCR prefill + manual line entry, never a second posting path) ----
+
+    fun editVoucherDraftLines(draft: VoucherDraft, lines: List<com.example.accounting.application.voucher.VoucherDraftLine>) {
+        viewModelScope.launch {
+            val comp = _uiState.value.currentCompany ?: return@launch
+            val ledgersMap = _uiState.value.ledgers.associateBy { it.ledgerId }
+            val voucher = Voucher(
+                voucherId = draft.draftId, companyId = comp.companyId, financialYearId = draft.financialYearId,
+                voucherNumber = "", voucherType = draft.voucherType, date = draft.date,
+                referenceNumber = draft.referenceNumber, narration = draft.narration,
+                items = lines.mapIndexed { idx, l ->
+                    JournalItem(
+                        itemId = "", voucherId = draft.draftId, companyId = comp.companyId, financialYearId = draft.financialYearId,
+                        ledgerId = l.ledgerId, ledgerName = ledgersMap[l.ledgerId]?.name ?: "", type = l.type,
+                        amount = Money.fromPaise(l.amountPaise), narration = l.narration, lineOrder = idx + 1
+                    )
+                }
+            )
+            when (val result = voucherDraftService.editDraft(draft.draftId, voucher)) {
+                is AccountingResult.Success -> emitMessage("Draft updated")
+                is AccountingResult.Failure -> emitMessage("Could not update draft: ${result.error.message}")
+            }
+        }
+    }
+
+    fun postVoucherDraft(draft: VoucherDraft) {
+        viewModelScope.launch {
+            val comp = _uiState.value.currentCompany ?: return@launch
+            if (draft.lines.isEmpty()) {
+                emitMessage("Add at least one ledger line before posting.")
+                return@launch
+            }
+            val voucherNumber = repository.generateNextVoucherNumber(comp.companyId, draft.financialYearId, draft.voucherType)
+            val ledgersMap = _uiState.value.ledgers.associateBy { it.ledgerId }
+            val voucher = Voucher(
+                voucherId = draft.draftId, companyId = comp.companyId, financialYearId = draft.financialYearId,
+                voucherNumber = voucherNumber, voucherType = draft.voucherType, date = draft.date,
+                referenceNumber = draft.referenceNumber, narration = draft.narration,
+                totalAmount = Money.fromPaise(draft.lines.filter { it.type == DrCr.DEBIT }.sumOf { it.amountPaise }),
+                items = draft.lines.mapIndexed { idx, l ->
+                    JournalItem(
+                        itemId = "", voucherId = draft.draftId, companyId = comp.companyId, financialYearId = draft.financialYearId,
+                        ledgerId = l.ledgerId, ledgerName = ledgersMap[l.ledgerId]?.name ?: "", type = l.type,
+                        amount = Money.fromPaise(l.amountPaise), narration = l.narration, lineOrder = idx + 1
+                    )
+                },
+                createdBy = "SENIOR_ACCOUNTANT"
+            )
+            when (val result = voucherDraftService.postDraft(voucher)) {
+                is AccountingResult.Success -> emitMessage("Voucher $voucherNumber posted successfully")
+                is AccountingResult.Failure -> emitMessage("Posting rejected: ${result.error.message}")
+            }
+        }
+    }
+
+    fun discardVoucherDraft(draftId: String) {
+        viewModelScope.launch {
+            val comp = _uiState.value.currentCompany ?: return@launch
+            when (val result = voucherDraftService.discardDraft(comp.companyId, draftId)) {
+                is AccountingResult.Success -> emitMessage("Draft discarded")
+                is AccountingResult.Failure -> emitMessage("Could not discard: ${result.error.message}")
+            }
+        }
+    }
+
+    // ---- Invoice drafts (read/cancel only this pass - creation reuses the existing, tested
+    // Sale/Purchase dialog and its immediate-post path; see docs/54 for the reasoning) ----
+
+    fun cancelInvoiceDraft(invoiceId: String) {
+        viewModelScope.launch {
+            val comp = _uiState.value.currentCompany ?: return@launch
+            val fy = _uiState.value.currentFinancialYear ?: return@launch
+            when (val result = invoiceService.cancelInvoice(comp.companyId, fy.financialYearId, invoiceId)) {
+                is AccountingResult.Success -> emitMessage("Invoice draft cancelled")
+                is AccountingResult.Failure -> emitMessage("Could not cancel: ${result.error.message}")
+            }
+        }
+    }
+
+    // ---- Profile / Business Setup ----
+
+    fun updateBusinessProfile(businessName: String, legalName: String, address: String, phone: String, email: String, gstin: String, pan: String) {
+        viewModelScope.launch {
+            val comp = _uiState.value.currentCompany ?: return@launch
+            val base = _uiState.value.businessProfile ?: BusinessProfile(businessProfileId = "", companyId = comp.companyId, businessName = businessName)
+            val profile = base.copy(businessName = businessName, legalName = legalName, address = address, phone = phone, email = email, gstin = gstin, pan = pan)
+            when (val result = profileService.upsertBusinessProfile(comp.companyId, profile)) {
+                is AccountingResult.Success -> {
+                    _uiState.update { it.copy(businessProfile = result.data) }
+                    emitMessage("Business profile updated")
+                }
+                is AccountingResult.Failure -> emitMessage("Failed: ${result.error.message}")
+            }
+        }
+    }
+
+    fun updateIndividualProfile(name: String, address: String, phone: String, email: String, pan: String) {
+        viewModelScope.launch {
+            val comp = _uiState.value.currentCompany ?: return@launch
+            val base = _uiState.value.individualProfile ?: IndividualProfile(individualProfileId = "", companyId = comp.companyId, name = name)
+            val profile = base.copy(name = name, address = address, phone = phone, email = email, pan = pan)
+            when (val result = profileService.upsertIndividualProfile(comp.companyId, profile)) {
+                is AccountingResult.Success -> {
+                    _uiState.update { it.copy(individualProfile = result.data) }
+                    emitMessage("Individual profile updated")
+                }
+                is AccountingResult.Failure -> emitMessage("Failed: ${result.error.message}")
+            }
+        }
+    }
+
+    // ---- Subscription ----
+
+    fun loadSubscription() {
+        viewModelScope.launch {
+            val comp = _uiState.value.currentCompany ?: return@launch
+            val fy = _uiState.value.currentFinancialYear ?: return@launch
+            _uiState.update { it.copy(currentSubscription = subscriptionService.getCurrent(comp.companyId, fy.financialYearId)) }
+        }
+    }
+
+    fun upgradeOrRenewSubscription(planType: SubscriptionPlanType, planName: String, entitlements: Set<EntitlementFeature>) {
+        viewModelScope.launch {
+            val comp = _uiState.value.currentCompany ?: return@launch
+            val fy = _uiState.value.currentFinancialYear ?: return@launch
+            when (val result = subscriptionService.createOrRenew(comp.companyId, fy.financialYearId, planType, planName, entitlements)) {
+                is AccountingResult.Success -> {
+                    _uiState.update { it.copy(currentSubscription = result.data) }
+                    emitMessage("Subscription updated to $planName")
+                }
+                is AccountingResult.Failure -> emitMessage("Failed: ${result.error.message}")
+            }
+        }
+    }
+
+    // ---- Reports Center extras (Outstanding/Receivables/Payables/Cash Flow/Ratio Analysis/HSN-SAC) ----
+
+    fun refreshReportsCenterExtras() {
+        viewModelScope.launch {
+            val comp = _uiState.value.currentCompany ?: return@launch
+            val fy = _uiState.value.currentFinancialYear ?: return@launch
+            val today = LocalDate.now()
+            val outstanding = reportService.outstanding(comp.companyId, today = today)
+            val receivables = reportService.receivables(comp.companyId, today)
+            val payables = reportService.payables(comp.companyId, today)
+            val cashFlow = reportService.cashFlow(comp.companyId, fy.financialYearId, fy.startDate..fy.endDate)
+            val ratios = reportService.ratioAnalysis(comp.companyId, fy.financialYearId)
+            val hsnSac = reportService.hsnSacSummary(comp.companyId, fy.financialYearId)
+            _uiState.update {
+                it.copy(
+                    outstandingReport = outstanding, receivablesReport = receivables, payablesReport = payables,
+                    cashFlowReport = cashFlow, ratioAnalysisReport = ratios, hsnSacSummary = hsnSac
+                )
+            }
+        }
+    }
+
+    // ---- Data Import (CSV/JSON -> Draft/Suggestion -> Review -> Explicit Create) ----
+
+    fun importFromFile(sourceFile: File, format: ImportFileFormat) {
+        viewModelScope.launch {
+            val comp = _uiState.value.currentCompany ?: return@launch
+            val bytes = sourceFile.readBytes()
+            val assetResult = repository.createDocumentAsset(
+                comp.companyId, DocumentAssetType.IMPORT_SOURCE_FILE, sourceFile.absolutePath, sha256(bytes),
+                if (format == ImportFileFormat.JSON) "application/json" else "text/csv", sourceFile.length()
+            )
+            if (assetResult is AccountingResult.Failure) {
+                emitMessage("Import failed: ${assetResult.error.message}")
+                return@launch
+            }
+            val asset = (assetResult as AccountingResult.Success).data
+            val result = dataImportService.parseFile(currentRequestingProfile(comp), format, asset.assetId)
+            when (result) {
+                is AccountingResult.Success -> {
+                    _uiState.update { it.copy(lastImportResult = result.data, lastImportRowOutcomes = emptyMap()) }
+                    emitMessage("Parsed ${result.data.suggestions.size} row(s) for review")
+                }
+                is AccountingResult.Failure -> emitMessage("Import failed: ${result.error.message}")
+            }
+        }
+    }
+
+    fun reviewAndCreateImportRow(suggestion: ImportRowSuggestion, resolvedType: ImportSuggestionType) {
+        viewModelScope.launch {
+            val comp = _uiState.value.currentCompany ?: return@launch
+            val result = dataImportService.reviewAndCreate(comp.companyId, suggestion, resolvedType)
+            val outcome = when (result) {
+                is AccountingResult.Success -> "Created"
+                is AccountingResult.Failure -> "Failed: ${result.error.message}"
+            }
+            _uiState.update { it.copy(lastImportRowOutcomes = it.lastImportRowOutcomes + (suggestion.rowNumber to outcome)) }
+            emitMessage("Row ${suggestion.rowNumber}: $outcome")
+        }
+    }
+
+    fun clearImportResult() {
+        _uiState.update { it.copy(lastImportResult = null, lastImportRowOutcomes = emptyMap()) }
+    }
+
+    // ---- OCR (suggestion-only, adapter deliberately unimplemented - always fails gracefully) ----
+
+    fun scanReceiptForVoucherDraft(imageFile: File) {
+        viewModelScope.launch {
+            val comp = _uiState.value.currentCompany ?: return@launch
+            val fy = _uiState.value.currentFinancialYear ?: return@launch
+            val bytes = imageFile.readBytes()
+            val assetResult = repository.createDocumentAsset(
+                comp.companyId, DocumentAssetType.OCR_SOURCE_IMAGE, imageFile.absolutePath, sha256(bytes), "image/jpeg", imageFile.length()
+            )
+            if (assetResult is AccountingResult.Failure) {
+                emitMessage("Scan failed: ${assetResult.error.message}")
+                return@launch
+            }
+            val asset = (assetResult as AccountingResult.Success).data
+            when (val result = ocrService.requestExtraction(currentRequestingProfile(comp), asset.assetId)) {
+                is AccountingResult.Success -> {
+                    _uiState.update { it.copy(lastOcrExtraction = result.data) }
+                    ocrService.reviewAndPrefillVoucherDraft(comp.companyId, fy.financialYearId, result.data)
+                    emitMessage("Receipt scanned - a draft was created for review; add ledger lines before posting.")
+                }
+                is AccountingResult.Failure -> emitMessage(result.error.message)
+            }
+        }
+    }
+
+    // ---- QR/Barcode (pure utility - no accounting logic) ----
+
+    fun generateBarcodeForItem(itemId: String) {
+        viewModelScope.launch {
+            val comp = _uiState.value.currentCompany ?: return@launch
+            when (val result = qrBarcodeService.generateForStockItem(currentRequestingProfile(comp), comp.companyId, itemId)) {
+                is AccountingResult.Success -> _uiState.update { it.copy(lastBarcodeGeneration = result.data) }
+                is AccountingResult.Failure -> emitMessage("Could not generate barcode: ${result.error.message}")
+            }
+        }
+    }
+
+    fun scanBarcodeImage(imageFile: File) {
+        viewModelScope.launch {
+            val comp = _uiState.value.currentCompany ?: return@launch
+            val bytes = imageFile.readBytes()
+            val assetResult = repository.createDocumentAsset(
+                comp.companyId, DocumentAssetType.OCR_SOURCE_IMAGE, imageFile.absolutePath, sha256(bytes), "image/jpeg", imageFile.length()
+            )
+            if (assetResult is AccountingResult.Failure) {
+                emitMessage("Scan failed: ${assetResult.error.message}")
+                return@launch
+            }
+            val asset = (assetResult as AccountingResult.Success).data
+            when (val result = qrBarcodeService.scanImage(currentRequestingProfile(comp), comp.companyId, asset.assetId)) {
+                is AccountingResult.Success -> {
+                    _uiState.update { it.copy(lastBarcodeScan = result.data) }
+                    emitMessage(if (result.data.matchedStockItemId != null) "Match found" else "No matching item found")
+                }
+                is AccountingResult.Failure -> emitMessage("Scan failed: ${result.error.message}")
+            }
+        }
+    }
+
+    fun clearBarcodeState() {
+        _uiState.update { it.copy(lastBarcodeGeneration = null, lastBarcodeScan = null) }
+    }
+
+    // ---- Export & Share (Android-only, JSON/CSV; delegates to ExportManagementService/ShareAdapter) ----
+
+    suspend fun exportVoucherAndShare(voucherId: String, format: com.example.accounting.domain.export.ExportFormat): android.content.Intent? {
+        val comp = _uiState.value.currentCompany ?: return null
+        val result = exportService.exportVoucher(comp.companyId, voucherId, format)
+        if (result is AccountingResult.Failure) {
+            emitMessage("Export failed: ${result.error.message}")
+            return null
+        }
+        val exportResult = (result as AccountingResult.Success).data
+        val ext = if (format == com.example.accounting.domain.export.ExportFormat.CSV) "csv" else "json"
+        val mimeType = if (ext == "csv") "text/csv" else "application/json"
+        val file = File(getApplication<Application>().cacheDir, "voucher_export_${System.currentTimeMillis()}.$ext")
+        file.writeText(exportResult.content)
+        return documentPreviewService.buildShareIntent(getApplication(), file, mimeType)
     }
 }
 

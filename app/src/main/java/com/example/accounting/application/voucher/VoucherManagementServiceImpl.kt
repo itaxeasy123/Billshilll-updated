@@ -11,6 +11,9 @@ import com.example.accounting.domain.accounting.JournalItem
 import com.example.accounting.domain.accounting.Voucher
 import com.example.accounting.domain.inventory.VoucherStockLine
 import com.example.accounting.domain.taxation.gst.GstTransaction
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
+import java.time.LocalDate
 import java.util.UUID
 
 /**
@@ -113,6 +116,28 @@ class VoucherManagementServiceImpl(
         )
         return AccountingResult.Success(Unit)
     }
+
+    /** Read-only draft listing (Phase 7J UI) - not part of the frozen [VoucherManagementService]
+     * interface, an additive convenience mirroring
+     * [com.example.accounting.application.automation.RecurringVoucherManagementService.getDrafts]'s
+     * equivalent for the recurring-voucher draft table. Fetches each draft's lines via a suspend
+     * call inside [kotlinx.coroutines.flow.map] - never a second reactive source, never recomputes
+     * a balance. */
+    fun listDrafts(companyId: String, status: VoucherDraftStatus): Flow<List<VoucherDraft>> =
+        dao.getVoucherDraftsByStatus(companyId, status).map { entities ->
+            entities.map { entity -> entity.toDomain(dao.getLinesForVoucherDraft(entity.draftId).map { it.toDomain() }) }
+        }
+
+    private fun VoucherDraftEntity.toDomain(lines: List<VoucherDraftLine>): VoucherDraft = VoucherDraft(
+        draftId = draftId, companyId = companyId, financialYearId = financialYearId,
+        voucherType = voucherType, date = LocalDate.parse(date), referenceNumber = referenceNumber,
+        narration = narration, lines = lines, status = status, postedVoucherId = postedVoucherId,
+        createdAt = createdAt, updatedAt = updatedAt
+    )
+
+    private fun VoucherDraftLineEntity.toDomain(): VoucherDraftLine = VoucherDraftLine(
+        ledgerId = ledgerId, type = type, amountPaise = amountPaise, narration = narration, lineOrder = lineOrder
+    )
 
     private fun JournalItem.toDraftLineEntity(draftId: String, index: Int): VoucherDraftLineEntity = VoucherDraftLineEntity(
         draftLineId = itemId.ifBlank { UUID.randomUUID().toString() },

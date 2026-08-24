@@ -6,25 +6,50 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.util.ArrayDeque
 
+/**
+ * Phase 7J UI: the bottom-nav is Home/Sales/Purchases/Money/Reports (5 items, per the UX spec) -
+ * every other area (Party, Items, Cash/Bank, Outstanding, Profile, Import/OCR, Subscription,
+ * Search) is reached through one of those 5 or through a top-bar entry point, never a 6th+ tab.
+ * Existing routes (Dashboard/DayBook/ChartOfAccounts/LedgerStatement/SettingsAndSync) are kept
+ * byte-identical in shape - only new routes are added.
+ */
 sealed class AppRoute(val path: String, val title: String) {
-    object Dashboard : AppRoute("#dashboard", "Dashboard")
+    object Dashboard : AppRoute("#dashboard", "Home")
     object DayBook : AppRoute("#daybook", "Day Book")
     object ChartOfAccounts : AppRoute("#chart-of-accounts", "Ledger Accounts")
     data class LedgerStatement(val ledgerId: String) : AppRoute("#statement/$ledgerId", "Ledger Statement")
-    object Reports : AppRoute("#reports", "Financial Reports")
+    object Reports : AppRoute("#reports", "Reports Center")
     object SettingsAndSync : AppRoute("#settings-sync", "Governance & Outbox Sync")
+
+    object Sales : AppRoute("#sales", "Sales")
+    object Purchases : AppRoute("#purchases", "Purchases")
+    object Money : AppRoute("#money", "Money")
+
+    /** [role] is "CUSTOMER" or "SUPPLIER" (kept as a raw string, matching [LedgerStatement]'s own
+     * raw-id convention - `navigation` never imports a `domain` type). */
+    data class Parties(val role: String) : AppRoute("#parties/$role", "Parties")
+
+    object Profile : AppRoute("#profile", "Profile & Business Setup")
+    object Subscription : AppRoute("#subscription", "Subscription")
+    object DataTools : AppRoute("#data-tools", "Import & Scan")
+    data class Search(val query: String = "") : AppRoute("#search/$query", "Search")
 
     companion object {
         fun fromHash(hash: String): AppRoute {
             return when {
-                hash.startsWith("#statement/") -> {
-                    val id = hash.removePrefix("#statement/")
-                    LedgerStatement(id)
-                }
+                hash.startsWith("#statement/") -> LedgerStatement(hash.removePrefix("#statement/"))
+                hash.startsWith("#parties/") -> Parties(hash.removePrefix("#parties/"))
+                hash.startsWith("#search/") -> Search(hash.removePrefix("#search/"))
                 hash == "#daybook" -> DayBook
                 hash == "#chart-of-accounts" -> ChartOfAccounts
                 hash == "#reports" -> Reports
                 hash == "#settings-sync" -> SettingsAndSync
+                hash == "#sales" -> Sales
+                hash == "#purchases" -> Purchases
+                hash == "#money" -> Money
+                hash == "#profile" -> Profile
+                hash == "#subscription" -> Subscription
+                hash == "#data-tools" -> DataTools
                 else -> Dashboard
             }
         }
