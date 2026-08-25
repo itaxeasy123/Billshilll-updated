@@ -2,6 +2,8 @@ package com.example.accounting.application.imports
 
 import com.example.accounting.core.common.AccountingResult
 import com.example.accounting.core.common.AppError
+import com.example.accounting.core.common.DrCr
+import com.example.accounting.core.common.Money
 import com.example.accounting.data.repository.AccountingRepository
 import com.example.accounting.domain.accounting.Ledger
 import com.example.accounting.domain.dataimport.DataImportAdapter
@@ -16,6 +18,7 @@ import com.example.accounting.domain.party.Party
 import com.example.accounting.domain.party.PartyEntityType
 import com.example.accounting.domain.party.PartyRole
 import com.example.accounting.domain.rendering.BusinessProfile
+import kotlinx.coroutines.flow.first
 
 /**
  * Application-service orchestration for the Import Draft/Suggestion/Review workflow (Phase 7J-B) -
@@ -61,7 +64,56 @@ class DataImportManagementService(
                     ?: return AccountingResult.Failure(AppError.ValidationError("Row ${suggestion.rowNumber}: could not find a ledger name column."))
                 val groupId = firstNonBlank(fields, "groupid", "group")
                     ?: return AccountingResult.Failure(AppError.ValidationError("Row ${suggestion.rowNumber}: could not find a group id column."))
-                repository.createLedger(Ledger(ledgerId = "", companyId = companyId, groupId = groupId, name = name))
+                // Verified live: AccountingRepository.createLedger performs no existence check of
+                // its own on `ledger.groupId` before inserting - without this lookup, an imported
+                // row with a typo'd or cross-company group id would silently create a ledger that
+                // every report then misclassifies (generateTrialBalance falls back to
+                // PrimaryGroup.ASSETS for an unresolvable groupId, never an error). getGroups is
+                // already company-scoped, so this one check covers both "exists" and "belongs to
+                // this company" at once.
+                val groupExists = repository.getGroups(companyId).first().any { it.groupId == groupId }
+                if (!groupExists) {
+                    return AccountingResult.Failure(AppError.ValidationError("Row ${suggestion.rowNumber}: group '$groupId' was not found for this company."))
+                }
+
+                // Opening balance: "openingbalance"/"opening_balance"/"opening balance" all
+                // normalize to the same "openingbalance" key via firstNonBlank's own existing
+                // normalization (lowercase, strip spaces/underscores) - "balance" is a distinct
+                // normalized key, so it's listed separately. Same reasoning for the type column
+                // ("openingbalancetype"/"opening_balance_type"/"opening balance type" collapse to
+                // one key; "drcr"/"type" are separate). A blank value is indistinguishable from an
+                // absent column here - firstNonBlank already treats them identically - so that is
+                // this feature's blank-value policy: not a new rule, a reuse of the existing one.
+                val openingBalanceRaw = firstNonBlank(fields, "openingbalance", "balance")
+                val openingBalanceTypeRaw = firstNonBlank(fields, "openingbalancetype", "drcr", "type")
+
+                val (openingBalance, openingBalanceType) = when {
+                    openingBalanceRaw != null && openingBalanceTypeRaw != null -> {
+                        val amount = when (val r = parseImportedOpeningBalance(suggestion.rowNumber, openingBalanceRaw)) {
+                            is AccountingResult.Failure -> return r
+                            is AccountingResult.Success -> r.data
+                        }
+                        val type = when (val r = parseImportedDrCr(suggestion.rowNumber, openingBalanceTypeRaw)) {
+                            is AccountingResult.Failure -> return r
+                            is AccountingResult.Success -> r.data
+                        }
+                        amount to type
+                    }
+                    openingBalanceRaw != null && openingBalanceTypeRaw == null ->
+                        return AccountingResult.Failure(AppError.ValidationError("Row ${suggestion.rowNumber}: an opening balance was given without an opening balance type column."))
+                    openingBalanceRaw == null && openingBalanceTypeRaw != null ->
+                        return AccountingResult.Failure(AppError.ValidationError("Row ${suggestion.rowNumber}: an opening balance type was given without an opening balance column."))
+                    // Both absent - preserves the pre-existing default (Ledger's own Money.ZERO/
+                    // DrCr.DEBIT defaults) exactly, never a second policy.
+                    else -> Money.ZERO to DrCr.DEBIT
+                }
+
+                repository.createLedger(
+                    Ledger(
+                        ledgerId = "", companyId = companyId, groupId = groupId, name = name,
+                        openingBalance = openingBalance, openingBalanceType = openingBalanceType
+                    )
+                )
             }
             ImportSuggestionType.STOCK_ITEM -> {
                 val name = firstNonBlank(fields, "name", "itemname", "item")
@@ -86,6 +138,31 @@ class DataImportManagementService(
      * this service does not track outcomes itself. */
     fun summarize(result: ImportResult, rowOutcomes: Map<Int, ImportRowOutcome>): ImportReconciliationSummary =
         ImportReconciliationSummary.from(result, rowOutcomes)
+
+    /** Fail-closed money parser for an imported opening-balance value - deliberately never
+     * [com.example.accounting.core.common.Money.parse], which silently returns [Money.ZERO] for
+     * any unparseable input (a reasonable default for a live UI field while typing; the wrong
+     * behavior for an import row, where a bad value must be rejected, never guessed into a
+     * plausible-looking zero). Accepts a plain decimal string (currency symbol/thousands
+     * separators tolerated, matching `Money.parse`'s own sanitization) - anything else is a
+     * row-numbered [AppError.ValidationError], never a silent [Money.ZERO]. */
+    private fun parseImportedOpeningBalance(rowNumber: Int, raw: String): AccountingResult<Money> {
+        val sanitized = raw.replace("₹", "").replace(",", "").trim()
+        val value = sanitized.toDoubleOrNull()
+            ?: return AccountingResult.Failure(AppError.ValidationError("Row $rowNumber: '$raw' is not a valid opening balance amount."))
+        return AccountingResult.Success(Money.fromRupees(value))
+    }
+
+    /** Fail-closed [DrCr] parser for an imported opening-balance-type value - deliberately never
+     * raw `DrCr.valueOf(...)`, which throws on anything other than exactly "DEBIT"/"CREDIT" and
+     * would crash the whole import batch over one bad row. Normalizes case/whitespace and accepts
+     * this import format's documented aliases (Debit/Credit, Dr/Cr) - anything else is a
+     * row-numbered [AppError.ValidationError], never a thrown exception. */
+    private fun parseImportedDrCr(rowNumber: Int, raw: String): AccountingResult<DrCr> = when (raw.trim().uppercase()) {
+        "DEBIT", "DR" -> AccountingResult.Success(DrCr.DEBIT)
+        "CREDIT", "CR" -> AccountingResult.Success(DrCr.CREDIT)
+        else -> AccountingResult.Failure(AppError.ValidationError("Row $rowNumber: '$raw' is not a valid opening balance type (expected Debit/Credit/Dr/Cr)."))
+    }
 
     private fun firstNonBlank(fields: Map<String, String>, vararg keys: String): String? {
         val normalized = fields.mapKeys { it.key.lowercase().replace(" ", "").replace("_", "") }

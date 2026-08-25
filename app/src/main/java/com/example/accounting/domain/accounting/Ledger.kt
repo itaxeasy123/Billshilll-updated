@@ -3,6 +3,21 @@ package com.example.accounting.domain.accounting
 import com.example.accounting.core.common.DrCr
 import com.example.accounting.core.common.Money
 
+/**
+ * A Ledger's GST registration status - a statutory tax-identity fact, the same family as
+ * [Ledger.gstin]/[Ledger.pan]/[Ledger.stateCode], so it lives here rather than on
+ * [com.example.accounting.domain.party.Party] (see `docs/35_PARTY_INVOICE_DOMAIN.md`'s own
+ * "GSTIN/PAN/address/bank details stay on Ledger, never duplicated onto Party" principle).
+ * Deliberately only two values - `COMPOSITION`/`SEZ` are not justified by anything in the current
+ * architecture and would be a guessed-ahead addition, not a derived one; this is a plain enum
+ * specifically so a future value is additive, never a rewrite, matching this codebase's existing
+ * `VoucherType`/`ExportFormat` precedent.
+ */
+enum class GstRegistrationStatus {
+    REGISTERED,
+    UNREGISTERED
+}
+
 data class Ledger(
     val ledgerId: String,
     val companyId: String,
@@ -16,6 +31,10 @@ data class Ledger(
     val currentBalance: Money = Money.ZERO,
     val currentBalanceType: DrCr = DrCr.DEBIT,
     val gstin: String = "",
+    /** `null` means UNKNOWN / NOT PROVIDED - never treated as either [GstRegistrationStatus.REGISTERED]
+     * or [GstRegistrationStatus.UNREGISTERED]. Every ledger that existed before this field was added
+     * has no source data for it, so `null` (never a guessed default) is the only honest value. */
+    val gstRegistrationStatus: GstRegistrationStatus? = null,
     val pan: String = "",
     val stateCode: String = "",
     val email: String = "",

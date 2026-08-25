@@ -108,3 +108,76 @@ sense (a real `ReconciliationAdapter` implementation) or **GST/HSN structural wi
 (`HsnSacCode` into `StockItem`/`InvoiceLine`), not further Import/Export breadth (Excel, more
 formats) - those stay explicitly deferred until the smaller pieces immediately ahead of them are
 done, one at a time.
+
+## Addendum: Ledger Opening Balance Import
+
+A follow-up read-only audit of this same LEDGER import path found one concrete gap: it always
+created a ledger with a zero opening balance, regardless of what a source file actually contained,
+because `DataImportManagementService.reviewAndCreate`'s `LEDGER` branch never read an
+opening-balance column at all. This addition closes that gap - `Ledger`, `AccountingRepository`,
+`VoucherPostingEngine`, and every report remain untouched; only the import-time field mapping and
+validation changed.
+
+### Supported columns (LEDGER rows only)
+
+Column matching reuses `firstNonBlank`'s existing normalization (lowercase, strip spaces and
+underscores) - so any of a header's listed spellings resolve to the same field:
+
+| Field | Recognized headers |
+|---|---|
+| Opening balance amount | `openingbalance`, `opening_balance`, `opening balance`, `balance` |
+| Opening balance type | `openingbalancetype`, `opening_balance_type`, `opening balance type`, `drcr`, `type` |
+
+### Supported balance-type values
+
+Case-insensitive, whitespace-trimmed: `DEBIT`, `DR` -> `DrCr.DEBIT`; `CREDIT`, `CR` ->
+`DrCr.CREDIT`. Anything else is rejected (see Invalid values below) - never passed to raw
+`DrCr.valueOf(...)`, which throws on anything other than the exact strings `"DEBIT"`/`"CREDIT"`
+and would crash the whole import batch over one bad row.
+
+### Partial-column rule
+
+|  | Type present | Type missing |
+|---|---|---|
+| **Balance present** | Parsed and imported normally. | `AppError.ValidationError` - rejected, no ledger created. |
+| **Balance missing** | `AppError.ValidationError` - rejected, no ledger created. | Both absent: the pre-existing default (`Ledger`'s own `Money.ZERO`/`DrCr.DEBIT`) - unchanged, not a new policy. |
+
+A column present in the header but blank for a given row is indistinguishable from the column
+being absent entirely - `firstNonBlank` already treats the two identically, so this is a reuse of
+an existing behavior, not a new blank-value rule.
+
+### Invalid-value behavior
+
+- **Invalid amount** (e.g. non-numeric text): a dedicated parser rejects it with
+  `AppError.ValidationError` naming the row and the offending value. Deliberately never
+  `Money.parse(...)`, which silently returns `Money.ZERO` for any unparseable input - correct for a
+  live UI field mid-typing, wrong for an import row, where a bad value must be rejected, never
+  guessed into a plausible-looking zero.
+- **Invalid balance type** (anything other than the values listed above): also a row-numbered
+  `AppError.ValidationError`, never a thrown exception - one bad row is rejected on its own; the
+  rest of the batch is unaffected, matching how a malformed CSV row already degrades to
+  `ImportResult.unparsedRowNumbers` rather than crashing the whole parse.
+- In every rejection case: no `Ledger` is created, no partial accounting data is written (the
+  check runs entirely before `AccountingRepository.createLedger` is ever called), and the row's
+  outcome (once reviewed through the existing `reviewAndCreateImportRow` flow) is recorded as a
+  failure like any other rejected suggestion - it is not silently dropped from
+  `ImportReconciliationSummary`.
+
+### Ledger creation
+
+A successfully parsed opening balance/type is passed straight into the existing `Ledger` domain
+model's `openingBalance`/`openingBalanceType` fields, then through the existing, unmodified
+`AccountingRepository.createLedger` - which already initializes `currentBalance`/
+`currentBalanceType` equal to the given opening values. `VoucherPostingEngine` remains the only
+place that ever moves a ledger's balance after creation; this feature only supplies the starting
+value.
+
+### Testing
+
+`LedgerOpeningBalanceImportTestSuite.kt`: valid debit/credit/decimal amounts import correctly;
+balance-without-type and type-without-balance are both rejected with no ledger created; an invalid
+amount and an invalid type are each rejected with no ledger created; both fields absent preserves
+the pre-existing zero-balance default; the imported balance is actually persisted; and the
+ledger's `currentBalance`/`currentBalanceType` initially equal the imported opening values.
+`LedgerImportGroupValidationTestSuite.kt` and `Phase7JBDataImportTestSuite.kt` were re-run
+unchanged to confirm no regression.
