@@ -328,9 +328,9 @@ fun CreateVoucherDialog(
 
                         ExposedDropdownMenuBox(expanded = debitDropdownExpanded, onExpandedChange = { debitDropdownExpanded = it }) {
                             OutlinedTextField(
-                                value = ledgersMap[debitLedgerId]?.name ?: if (isContra) "Select From Account (Cash/Bank)" else "Select Debit Account (Dr)",
+                                value = ledgersMap[debitLedgerId]?.name ?: if (isContra) "Select From Account (Cash/Bank)" else "Select Source Account",
                                 onValueChange = {}, readOnly = true,
-                                label = { Text(if (isContra) "From Account" else "Debit Account (Dr)") },
+                                label = { Text(if (isContra) "From Account" else "Source Account") },
                                 trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = debitDropdownExpanded) },
                                 modifier = Modifier.fillMaxWidth().menuAnchor()
                             )
@@ -348,9 +348,9 @@ fun CreateVoucherDialog(
 
                         ExposedDropdownMenuBox(expanded = creditDropdownExpanded, onExpandedChange = { creditDropdownExpanded = it }) {
                             OutlinedTextField(
-                                value = ledgersMap[creditLedgerId]?.name ?: if (isContra) "Select To Account (Cash/Bank)" else "Select Credit Account (Cr)",
+                                value = ledgersMap[creditLedgerId]?.name ?: if (isContra) "Select To Account (Cash/Bank)" else "Select Adjustment Account",
                                 onValueChange = {}, readOnly = true,
-                                label = { Text(if (isContra) "To Account" else "Credit Account (Cr)") },
+                                label = { Text(if (isContra) "To Account" else "Adjustment Account") },
                                 trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = creditDropdownExpanded) },
                                 modifier = Modifier.fillMaxWidth().menuAnchor()
                             )

@@ -61,6 +61,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.material.icons.filled.Inventory2
+import androidx.compose.material.icons.filled.QrCode2
 import com.example.accounting.core.common.DrCr
 import com.example.accounting.core.common.Money
 import com.example.accounting.domain.accounting.AccountGroup
@@ -84,8 +85,24 @@ fun ChartOfAccountsScreen(
     onOpenCreateLedger: () -> Unit,
     onOpenCreateStockItem: () -> Unit = {},
     onDeleteLedger: ((Ledger) -> Unit)? = null,
+    /** Phase 7J UI: Items only shows when the company is [com.example.accounting.domain.company.AccountingMode.ACCOUNT_WITH_INVENTORY]
+     * - the single gating point for this screen (mirrors every other Items-related gate, all
+     * reading `AccountingUiState.currentCompany?.accountingMode` via the same
+     * `isInventoryEnabled` check, never re-derived per call site). */
+    showItemsTab: Boolean = true,
+    /** Phase 7J UI: pure utility, no accounting logic - `QrBarcodeManagementService.generateForStockItem`. */
+    onGenerateBarcode: (String) -> Unit = {},
+    /** Phase 7J UI fix: pure utility, no accounting logic - `QrBarcodeManagementService.scanImage`
+     * via `AccountingViewModel.scanBarcodeImage`. Was implemented in the ViewModel but had no UI
+     * entry point anywhere in the app before this fix. */
+    onScanBarcode: () -> Unit = {},
+    /** Phase 7J UI fix: discoverability hint for the Account-Mode toggle - shown only when Items is
+     * hidden, since a hidden tab gives the user no clue the setting exists. Navigates to the
+     * existing, untouched "Accounting Setup" section of Settings - never a second toggle. */
+    onOpenAccountingSetup: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
+    val visibleTabs = remember(showItemsTab) { CoaTab.entries.filter { it != CoaTab.ITEMS || showItemsTab } }
     var selectedCoaTab by remember { mutableStateOf(CoaTab.LEDGERS) }
     var searchQuery by remember { mutableStateOf("") }
     var selectedGroupFilter by remember { mutableStateOf<PrimaryGroup?>(null) }
@@ -104,32 +121,56 @@ fun ChartOfAccountsScreen(
         )
     } else {
         Column(modifier = modifier.fillMaxSize()) {
-            // Top Section: Segmented Navigation
+            // Top Section: Segmented Navigation - only ever the tabs AccountingMode allows
+            // (Phase 7J UI gating fix; ITEMS omitted entirely, never shown-then-disabled).
+            val effectiveTab = if (selectedCoaTab in visibleTabs) selectedCoaTab else CoaTab.LEDGERS
             TabRow(
-                selectedTabIndex = selectedCoaTab.ordinal,
+                selectedTabIndex = visibleTabs.indexOf(effectiveTab).coerceAtLeast(0),
                 modifier = Modifier.fillMaxWidth().testTag("coa_tab_row")
             ) {
-                Tab(
-                    selected = selectedCoaTab == CoaTab.LEDGERS,
-                    onClick = { selectedCoaTab = CoaTab.LEDGERS },
-                    text = { Text("Ledgers (${uiState.ledgers.size})") },
-                    icon = { Icon(Icons.Default.List, contentDescription = "Ledgers") }
-                )
-                Tab(
-                    selected = selectedCoaTab == CoaTab.GROUPS,
-                    onClick = { selectedCoaTab = CoaTab.GROUPS },
-                    text = { Text("Groups (${uiState.groups.size})") },
-                    icon = { Icon(Icons.Default.AccountTree, contentDescription = "Groups Hierarchy") }
-                )
-                Tab(
-                    selected = selectedCoaTab == CoaTab.ITEMS,
-                    onClick = { selectedCoaTab = CoaTab.ITEMS },
-                    text = { Text("Items (${uiState.stockItems.size})") },
-                    icon = { Icon(Icons.Default.Inventory2, contentDescription = "Items") }
-                )
+                visibleTabs.forEach { tab ->
+                    when (tab) {
+                        CoaTab.LEDGERS -> Tab(
+                            selected = effectiveTab == CoaTab.LEDGERS,
+                            onClick = { selectedCoaTab = CoaTab.LEDGERS },
+                            text = { Text("Ledgers (${uiState.ledgers.size})") },
+                            icon = { Icon(Icons.Default.List, contentDescription = "Ledgers") }
+                        )
+                        CoaTab.GROUPS -> Tab(
+                            selected = effectiveTab == CoaTab.GROUPS,
+                            onClick = { selectedCoaTab = CoaTab.GROUPS },
+                            text = { Text("Groups (${uiState.groups.size})") },
+                            icon = { Icon(Icons.Default.AccountTree, contentDescription = "Groups Hierarchy") }
+                        )
+                        CoaTab.ITEMS -> Tab(
+                            selected = effectiveTab == CoaTab.ITEMS,
+                            onClick = { selectedCoaTab = CoaTab.ITEMS },
+                            text = { Text("Items (${uiState.stockItems.size})") },
+                            icon = { Icon(Icons.Default.Inventory2, contentDescription = "Items") }
+                        )
+                    }
+                }
             }
 
-            when (selectedCoaTab) {
+            if (!showItemsTab && onOpenAccountingSetup != null) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onOpenAccountingSetup() }
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(Icons.Default.Inventory2, contentDescription = null, modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.primary)
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        "Selling items? Turn on inventory tracking in Company Settings.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+            }
+
+            when (effectiveTab) {
                 CoaTab.LEDGERS -> {
                     // Chart of Accounts Browser
                     val filteredLedgers = remember(uiState.ledgers, selectedGroupFilter, searchQuery, showZeroBalanceLedgers) {
@@ -242,7 +283,7 @@ fun ChartOfAccountsScreen(
                 }
 
                 CoaTab.ITEMS -> {
-                    ItemsListView(items = uiState.stockItems, onOpenCreateStockItem = onOpenCreateStockItem)
+                    ItemsListView(items = uiState.stockItems, onOpenCreateStockItem = onOpenCreateStockItem, onGenerateBarcode = onGenerateBarcode, onScanBarcode = onScanBarcode)
                 }
             }
         }
@@ -256,40 +297,65 @@ fun ChartOfAccountsScreen(
  * else in this app - items referenced by posted stock movements must never disappear).
  */
 @Composable
-fun ItemsListView(items: List<StockItem>, onOpenCreateStockItem: () -> Unit) {
+fun ItemsListView(
+    items: List<StockItem>,
+    onOpenCreateStockItem: () -> Unit,
+    onGenerateBarcode: (String) -> Unit = {},
+    onScanBarcode: () -> Unit = {}
+) {
     Box(modifier = Modifier.fillMaxSize()) {
-        if (items.isEmpty()) {
-            Column(
-                modifier = Modifier.fillMaxSize().padding(32.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center
+        Column(modifier = Modifier.fillMaxSize()) {
+            // Phase 7J UI fix: "Scan Barcode" was implemented end-to-end in the ViewModel
+            // (scanBarcodeImage) but had no UI entry point anywhere - this is the fix.
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.End
             ) {
-                Icon(Icons.Default.Inventory2, contentDescription = null, modifier = Modifier.size(48.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                Spacer(modifier = Modifier.height(12.dp))
-                Text("No items yet", style = MaterialTheme.typography.titleMedium)
-                Text("Add an item to enable item-driven Sale/Purchase billing.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                androidx.compose.material3.TextButton(onClick = onScanBarcode) {
+                    Icon(Icons.Default.QrCode2, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Scan Barcode")
+                }
             }
-        } else {
-            LazyColumn(
-                modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 10.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-                contentPadding = PaddingValues(bottom = 80.dp)
-            ) {
-                items(items) { item ->
-                    OutlinedCard(shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth()) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth().padding(12.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column {
-                                Text(item.name, style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Medium))
-                                Text(
-                                    "HSN/SAC ${item.hsnCode.ifBlank { "-" }} - GST ${item.gstRatePercent}% - Unit ${item.unit}",
-                                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
+
+            if (items.isEmpty()) {
+                Column(
+                    modifier = Modifier.fillMaxSize().padding(32.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    Icon(Icons.Default.Inventory2, contentDescription = null, modifier = Modifier.size(48.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text("No items yet", style = MaterialTheme.typography.titleMedium)
+                    Text("Add an item to enable item-driven Sale/Purchase billing.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 10.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    contentPadding = PaddingValues(bottom = 80.dp)
+                ) {
+                    items(items) { item ->
+                        OutlinedCard(shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth()) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(12.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column {
+                                    Text(item.name, style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Medium))
+                                    Text(
+                                        "HSN/SAC ${item.hsnCode.ifBlank { "-" }} - GST ${item.gstRatePercent}% - Unit ${item.unit}",
+                                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(item.currentQuantity.format(), style = MaterialTheme.typography.bodyMedium)
+                                    IconButton(onClick = { onGenerateBarcode(item.itemId) }) {
+                                        Icon(Icons.Default.QrCode2, contentDescription = "Generate barcode")
+                                    }
+                                }
                             }
-                            Text(item.currentQuantity.format(), style = MaterialTheme.typography.bodyMedium)
                         }
                     }
                 }

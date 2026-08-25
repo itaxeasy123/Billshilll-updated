@@ -980,3 +980,114 @@ for the full per-area writeup.
 - **Explicitly out of scope**: real OCR/ML implementation (still contract-only, Phase 7I unchanged),
   Excel import, GSTR/ITR filing, any UI, any change to a frozen engine, Outbox/SyncEvent sync for
   Subscription or Bank/UPI Profile, an HSN/SAC facade (not named in this phase's scope).
+
+## Phase 7J UI - Business-Action UI over the Frozen 7J-B Service Layer (2026-08-24)
+
+The first real UI installment since Phase 0 - every prior phase built and froze the accounting
+engine plus (7J-B) a full application-service layer with almost no UI on top of it (5 pre-existing
+screens: Dashboard, Day Book, Chart of Accounts, Reports, Settings/Sync). Governed by a
+user-supplied UX/architecture spec (`LedgerPrime_Phase_7J_UI_UX_Architecture.md`), reconciled
+against the frozen 7J-B service layer in a dedicated read-only design pass before any code was
+written - see `docs/54_UI_UX_ARCHITECTURE.md` for the full writeup. No accounting logic added; the
+three narrow backend additions below (all pre-approved before implementation) are the only new
+code outside `presentation/`/`ui/theme/`, each a pure delegation or pure aggregation.
+
+- **Royal Purple + Off-White theme** (`ui/theme/{Color,Theme}.kt`) - confirmed by direct read
+  before touching anything that all 5 pre-existing screens + 6 dialogs consume
+  `MaterialTheme.colorScheme.*` exclusively, zero hardcoded hex, so the new palette recolors 100%
+  of existing UI with **zero screen-file edits**. Both a light and a symmetric Royal-Purple-based
+  dark `ColorScheme` were built (the UX spec was silent on dark mode - built rather than left
+  mismatched). Status accents (`EmeraldCredit`/`CrimsonDebit`/`AmberWarning`/`IndigoTax`) kept
+  unchanged; `PrimaryBlue*`/`Navy900`/`Slate*` retired (confirmed unreferenced outside `theme/`).
+- **5-item bottom nav** (`NavigationTab { HOME, SALES, PURCHASES, MONEY, REPORTS }`,
+  `AccountingViewModel.kt`) replacing the old `{DASHBOARD, DAYBOOK, CHART_OF_ACCOUNTS, REPORTS,
+  SETTINGS_SYNC}`; `HashRouter.kt`'s `AppRoute` grew additively (`Sales`, `Purchases`, `Money`,
+  `Parties`, `Profile`, `Subscription`, `DataTools`, `Search`). `MainAppScreen.kt` dispatches on
+  `uiState.currentRoute` (not just `selectedTab`) since Profile/Subscription/DataTools/Search never
+  own a bottom-nav tab - reached via two new `AppTopBar.kt` icons (Search, Profile) or from within
+  another screen, per the spec's "secondary features reached through their respective sections"
+  rule.
+- **Home rebuilt as a "Business Cockpit"** (`DashboardScreen.kt`, rebuilt not replaced) - a Quick
+  Actions row (Sale/Purchase/Receive/Pay/Transfer/Add Customer/Add Supplier/Add Item, business-
+  action framed) and a Business Snapshot widget grid (Cash/Bank/Receivables/Payables/Sales/
+  Purchases/Profit-or-Surplus/GST/Outstanding), every figure a direct read of an already-loaded
+  `AccountingUiState` field - zero summation performed in this file.
+- **Sales/Purchases** (`SalesScreen.kt`/`PurchasesScreen.kt`, new) - voucher creation is **not**
+  reimplemented: reuses the existing, tested `CreateVoucherDialog(defaultVoucherType =
+  VoucherType.SALES/PURCHASE)`, posted via the existing `postTradingDocument`/`buildSale`/
+  `buildPurchase` path already wired in `AccountingViewModel.kt` - zero new posting logic.
+  `PartiesScreen.kt` (new, shared via a `role` param) lists/creates Customers or Suppliers through
+  `PartyManagementService`; Party edit stays out of scope, matching the frozen service layer's own
+  create/list-only surface.
+- **Money** (`MoneyHomeScreen.kt`/`MoneyTabContent`, new) - a sub-menu per the spec's exact list
+  (Receive Money/Pay Money/Transfer/Cash/Bank/UPI), a Pending Reviews tile, and Journal moved to an
+  explicit "Advanced" section (never a primary action, Section 15). Receive/Pay/Transfer all reuse
+  the same `CreateVoucherDialog` with `VoucherType.RECEIPT`/`PAYMENT`/`CONTRA` preselected,
+  including its existing settlement-allocation UI - never a second allocation UI.
+  `VoucherDraftReviewScreen.kt`/`VoucherDraftEditorScreen` (new) implement the Draft/Review/Post
+  queue: list -> ledger-line editor -> Post (direct delegation to
+  `VoucherManagementServiceImpl.postDraft` -> the existing, unmodified
+  `AccountingRepository.postVoucher`, never a second posting path) or Discard.
+  `CashOrBankLedgerListScreen`/`UpiProfilesScreen.kt` (new) are read-only/settlement-metadata-only,
+  reusing the existing ledger-statement flow and `BankUpiProfileService` respectively.
+- **Reports Center** (`ReportsCenterScreen.kt`, new, replaces the old flat 4-tab `ReportsScreen.kt`
+  as the routed destination) - a category-selector landing page per the spec's 5 categories
+  (Financial/Sales-Purchase/Accounts/GST/Analysis). The existing report-rendering composables
+  (`TrialBalanceView`, `ProfitAndLossView`/`IncomeAndExpenditureView`, `BalanceSheetView`,
+  `GSTCenterView`, still in `ReportsScreen.kt`) are reused verbatim. New views (`CashFlowView`,
+  `RatioAnalysisView`, `OutstandingList`, `HsnSacSummaryView`) read already-loaded
+  `AccountingUiState` fields populated by a new `AccountingViewModel.refreshReportsCenterExtras()`
+  calling `ReportManagementService`'s existing pure-delegation methods. Sales/Purchase Register and
+  Cash/Bank Book/Receipt/Payment Register are explicit UI-side *filters* over already-fetched
+  `uiState.vouchers` - never a new calculation. **Fund Flow and CMA render as visible, disabled
+  "Coming soon" tiles** - both have zero backend implementation and this phase does not write new
+  calculation logic to fill them.
+- **Profile/Subscription/Import & Scan** - `ProfileScreen.kt` (new) shows Business and Individual
+  profile sections unconditionally, both at once (no field distinguishes which applies; the frozen
+  `ProfileApplicationService` enforces no exclusivity either); hosts entry points to Import & Scan,
+  Subscription, and the existing `SettingsAndSyncScreen.kt` (relocated out of the bottom nav, file
+  itself untouched). `SubscriptionScreen.kt` (new) - plan status + entitlement checklist +
+  upgrade/renew; **no other new screen this phase checks an entitlement before offering its
+  action**, per the resolved decision to defer gating. `DataToolsScreen.kt` (new) - CSV/JSON import
+  and "Scan Receipt" (OCR), both strictly File -> Parser -> Validation -> Draft/Suggestion -> User
+  Review -> Explicit Create/Post; OCR's entry point always renders a graceful "not yet available"
+  state today (`OcrIngestionAdapter` has no real implementation) - expected, documented behavior,
+  deliberately left enabled rather than hidden. File picking uses SAF (`OpenDocument`, CSV/JSON)
+  and Android's Photo Picker (`PickVisualMedia`, receipt photos) exclusively - confirmed zero new
+  `AndroidManifest.xml` entries needed.
+- **Search** (`SearchScreen.kt`, new, persistent top-bar icon) - a composite, in-memory filter over
+  `uiState.parties`/`ledgers`/`vouchers`/`stockItems`; never recomputes anything, every result
+  routes into an existing detail screen.
+- **Account Mode gating fix** (the one confirmed pre-existing UI gap this phase closes) -
+  `isInventoryEnabled(uiState)` (new, pure function, `AccountingViewModel.kt`) is the single point
+  every Items-related call site now reads; `ChartOfAccountsScreen`'s `CoaTab` list filters `ITEMS`
+  out entirely when `AccountingMode != ACCOUNT_WITH_INVENTORY`, closing the gap 7J-B's own audit
+  flagged (this tab previously rendered unconditionally regardless of mode).
+- **Shared component**: `presentation/components/SectionCard.kt` (new) - one reusable rectangular
+  container used by every new screen this phase, colored entirely through `MaterialTheme.colorScheme`
+  so it inherits the new theme automatically; the 5 pre-existing screens' own inline card usage is
+  completely untouched.
+- **Backend additions (the only three, all pre-approved)**: `VoucherManagementServiceImpl.listDrafts`
+  (additive, not part of the frozen interface, mirrors `RecurringVoucherManagementService.getDrafts`);
+  `DocumentAssetType` gains `IMPORT_SOURCE_FILE`/`OCR_SOURCE_IMAGE` (additive enum values, so
+  Import/OCR can persist a picked file/photo as a checksummed `DocumentAsset` before parsing);
+  `ReportManagementService.hsnSacSummary` + one additive `AccountingRepository.getGstTransactionsForCompanyFY`
+  read-only helper - pure grouping of already-computed `GstTransaction` rows by HSN/SAC code, never
+  a new tax calculation.
+- **New tests**: `Phase7JUITestSuite.kt` - `isInventoryEnabled` (Account-Mode-with-inventory/
+  account-only/no-current-company), `VoucherManagementServiceImpl.listDrafts` (status filtering,
+  entity-to-domain line mapping), `ReportManagementService.hsnSacSummary` (grouping/aggregation
+  correctness across multiple HSN codes and Output/Input direction, empty-state).
+- **Verification**: Android - `compileDebugKotlin`/`compileDebugUnitTestKotlin`/`testDebugUnitTest`
+  clean throughout implementation, re-confirmed at 439/444 (same pre-existing 5 Robolectric
+  `DefaultSdkProvider` environment failures - `ExampleRobolectricTest`, `GreetingScreenshotTest`,
+  `Phase7FRecurringVoucherPostingTest`, `SuspenseControlArchitectureTest`,
+  `Phase7JBVoucherPostingTest` - zero regressions) before the new test file was added; final count
+  with the new suite included verified after. Real visual/screenshot verification is not achievable
+  in this environment (the repo's only Compose-test file is already among the pre-existing
+  failures) - matching every prior UI-adjacent phase's own documented disclosure.
+- **Explicitly out of scope**: Party/Ledger/Item edit (no `updateParty`/`updateLedger`/
+  `updateStockItem` exists anywhere in the frozen service layer), entitlement gating beyond the
+  Subscription screen itself, a real OCR implementation, Fund Flow, CMA, live-camera QR/barcode
+  scanning (item barcode *generation* was added; a dedicated scan-to-match screen was not), Excel
+  import, GSTR/ITR filing, any change to a frozen engine.

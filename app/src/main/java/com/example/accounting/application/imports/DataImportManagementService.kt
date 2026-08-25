@@ -6,7 +6,9 @@ import com.example.accounting.data.repository.AccountingRepository
 import com.example.accounting.domain.accounting.Ledger
 import com.example.accounting.domain.dataimport.DataImportAdapter
 import com.example.accounting.domain.dataimport.ImportFileFormat
+import com.example.accounting.domain.dataimport.ImportReconciliationSummary
 import com.example.accounting.domain.dataimport.ImportResult
+import com.example.accounting.domain.dataimport.ImportRowOutcome
 import com.example.accounting.domain.dataimport.ImportRowSuggestion
 import com.example.accounting.domain.dataimport.ImportSuggestionType
 import com.example.accounting.domain.inventory.StockItem
@@ -77,6 +79,13 @@ class DataImportManagementService(
             }
         }
     }
+
+    /** Pure aggregation, direct delegation to [ImportReconciliationSummary.from] - never a second
+     * computation of what was accepted/rejected/unresolved. [rowOutcomes] is the caller's own
+     * record of each suggestion's review outcome (e.g. from repeated [reviewAndCreate] calls);
+     * this service does not track outcomes itself. */
+    fun summarize(result: ImportResult, rowOutcomes: Map<Int, ImportRowOutcome>): ImportReconciliationSummary =
+        ImportReconciliationSummary.from(result, rowOutcomes)
 
     private fun firstNonBlank(fields: Map<String, String>, vararg keys: String): String? {
         val normalized = fields.mapKeys { it.key.lowercase().replace(" ", "").replace("_", "") }

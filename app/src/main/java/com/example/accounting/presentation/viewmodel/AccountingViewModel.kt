@@ -163,6 +163,15 @@ data class AccountingUiState(
     val lastBarcodeScan: BarcodeScanSuggestion? = null
 )
 
+/**
+ * Phase 7J UI: the single Account-Mode gating point every Items-related call site reads (CoA's
+ * Items tab, Sales/Purchase item pickers, Home's "Add Item" quick action) - never re-derived
+ * per-site (the exact kind of duplication `CashBankLedgerService`'s own doc comment already
+ * flagged as a smell elsewhere in this codebase).
+ */
+fun isInventoryEnabled(uiState: AccountingUiState): Boolean =
+    uiState.currentCompany?.accountingMode == com.example.accounting.domain.company.AccountingMode.ACCOUNT_WITH_INVENTORY
+
 class AccountingViewModel(application: Application) : AndroidViewModel(application) {
 
     private val db = AppDatabase.getInstance(application)
@@ -753,6 +762,91 @@ class AccountingViewModel(application: Application) : AndroidViewModel(applicati
                 is AccountingResult.Failure -> {
                     emitMessage("Posting rejected: ${result.error.message}")
                 }
+            }
+        }
+    }
+
+    /**
+     * Phase 7J UI: Receive Money/Pay Money/Transfer with an opt-in Round Off toggle - a new,
+     * narrow addition, NOT a second posting mechanism. When [applyRoundOff] is false, or the
+     * rounding delta is zero, this is byte-for-byte the existing [postQuickVoucher] path. When
+     * true and the delta is non-zero: the debit line is posted at the rounded whole-rupee amount
+     * (the actual cash/bank movement), the credit line keeps the exact amount entered (the precise
+     * settlement), and the difference posts to the existing, protected Round Off ledger - resolved
+     * via the existing `AccountingRepository.ensureRoundOffLedgerExists`/`resolveRoundOffLedgerRef`
+     * (the same functions `TradingWorkflowEngine`'s caller already uses for Sale/Purchase), never a
+     * new ledger, never a hardcoded id. Still posts through the same, single, unmodified
+     * `AccountingRepository.postVoucher` -> `VoucherPostingEngine` path as every other voucher -
+     * that engine independently re-validates the double-entry balance regardless of what's
+     * computed here.
+     */
+    fun postQuickVoucherWithRoundOff(
+        voucherType: VoucherType,
+        date: LocalDate,
+        debitLedgerId: String,
+        creditLedgerId: String,
+        amount: Money,
+        narration: String,
+        refNumber: String = "",
+        applyRoundOff: Boolean = false
+    ) {
+        viewModelScope.launch {
+            val comp = _uiState.value.currentCompany ?: return@launch
+            val fy = _uiState.value.currentFinancialYear ?: return@launch
+            val ledgersMap = _uiState.value.ledgers.associateBy { it.ledgerId }
+            val debitLedger = ledgersMap[debitLedgerId]
+            val creditLedger = ledgersMap[creditLedgerId]
+
+            if (debitLedger == null || creditLedger == null) {
+                emitMessage("Validation error: Invalid account selected.")
+                return@launch
+            }
+
+            val roundOff = if (applyRoundOff) {
+                com.example.accounting.domain.accounting.RoundOffEngine.roundInvoiceTotal(amount)
+            } else null
+
+            if (roundOff == null || roundOff.roundOffAmount.paise == 0L) {
+                postQuickVoucher(voucherType, date, debitLedgerId, creditLedgerId, amount, narration, refNumber)
+                return@launch
+            }
+
+            val voucherId = "VCH_${voucherType.code}_${UUID.randomUUID().toString().take(8).uppercase()}"
+            val voucherNumber = repository.generateNextVoucherNumber(comp.companyId, fy.financialYearId, voucherType)
+
+            repository.ensureRoundOffLedgerExists(comp.companyId)
+            val roundOffRef = repository.resolveRoundOffLedgerRef(comp.companyId)
+            val roundOffType = if (roundOff.roundOffAmount.isPositive) DrCr.CREDIT else DrCr.DEBIT
+
+            val items = listOf(
+                JournalItem(
+                    itemId = UUID.randomUUID().toString(), voucherId = voucherId, companyId = comp.companyId,
+                    financialYearId = fy.financialYearId, ledgerId = debitLedgerId, ledgerName = debitLedger.name,
+                    type = DrCr.DEBIT, amount = roundOff.roundedTotal, narration = narration, lineOrder = 1
+                ),
+                JournalItem(
+                    itemId = UUID.randomUUID().toString(), voucherId = voucherId, companyId = comp.companyId,
+                    financialYearId = fy.financialYearId, ledgerId = creditLedgerId, ledgerName = creditLedger.name,
+                    type = DrCr.CREDIT, amount = roundOff.rawTotal, narration = narration, lineOrder = 2
+                ),
+                JournalItem(
+                    itemId = UUID.randomUUID().toString(), voucherId = voucherId, companyId = comp.companyId,
+                    financialYearId = fy.financialYearId, ledgerId = roundOffRef.ledgerId, ledgerName = roundOffRef.name,
+                    type = roundOffType, amount = roundOff.roundOffAmount.abs(), narration = "Round off adjustment", lineOrder = 3
+                )
+            )
+
+            val voucher = Voucher(
+                voucherId = voucherId, companyId = comp.companyId, financialYearId = fy.financialYearId,
+                voucherNumber = voucherNumber, voucherType = voucherType, date = date, referenceNumber = refNumber,
+                narration = narration, totalAmount = roundOff.roundedTotal, items = items, createdBy = "SENIOR_ACCOUNTANT"
+            )
+
+            when (val result = repository.postVoucher(voucher)) {
+                is AccountingResult.Success -> emitMessage(
+                    "Voucher $voucherNumber posted successfully (${roundOff.roundedTotal.formatPlain()}, rounded off ${roundOff.roundOffAmount.abs().formatPlain()})"
+                )
+                is AccountingResult.Failure -> emitMessage("Posting rejected: ${result.error.message}")
             }
         }
     }
