@@ -28,6 +28,20 @@ data class Company(
     val financialYearStartMonth: Int = 4, // April (Indian FY)
     val accountingMode: AccountingMode = AccountingMode.ACCOUNT_ONLY,
     val businessType: BusinessType = BusinessType.TRADING,
+    /**
+     * Whether this company uses/enables GST functionality at all - a company-level
+     * configuration/capability toggle, the same shape as [accountingMode]/[businessType], and
+     * deliberately independent of [com.example.accounting.domain.accounting.Ledger.gstRegistrationStatus]
+     * (a per-ledger *fact*, never inferred from or synced with this setting).
+     *
+     * Defaults to `true`, not `false`: every existing Sale/Purchase/Credit-Debit-Note voucher is
+     * built with `Voucher.isGstApplicable = true` today regardless of any company setting (there
+     * was none before this field), and GST amounts are always computed per line via
+     * `GstCalculationEngine`. `true` is the only default that reproduces every existing company's
+     * current behavior unchanged - `false` would silently flip every pre-existing company to a
+     * "GST disabled" state nothing about their actual data or configuration ever chose.
+     */
+    val gstEnabled: Boolean = true,
     val status: CompanyStatus = CompanyStatus.ACTIVE,
     val isDefault: Boolean = false,
     val createdAt: Long = System.currentTimeMillis(),

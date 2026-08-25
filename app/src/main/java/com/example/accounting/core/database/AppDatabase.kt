@@ -83,7 +83,7 @@ import com.example.accounting.data.local.entity.VoucherStockLineEntity
         CompanySubscriptionEntity::class,
         BankUpiProfileEntity::class
     ],
-    version = 9,
+    version = 10,
     exportSchema = false
 )
 @TypeConverters(RoomConverters::class)
@@ -762,6 +762,21 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
-        val ALL_MIGRATIONS: Array<Migration> = arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9)
+        /**
+         * Migration 9 -> 10 (Company-level GST configuration). Purely additive: one new column on
+         * `companies`, `gstEnabled`, defaulted to `1` (true) so every existing company keeps its
+         * current, always-on GST behavior unchanged - `Voucher.isGstApplicable` is already
+         * hardcoded `true` at every Sale/Purchase/Credit-Debit-Note construction site today,
+         * regardless of any company setting, so `true` is the value that reproduces existing
+         * behavior, never `false`. No column dropped, renamed, or retyped; no existing row
+         * rewritten - satisfies Invariant 21 (no destructive fallback migration).
+         */
+        val MIGRATION_9_10 = object : Migration(9, 10) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE companies ADD COLUMN gstEnabled INTEGER NOT NULL DEFAULT 1")
+            }
+        }
+
+        val ALL_MIGRATIONS: Array<Migration> = arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10)
     }
 }

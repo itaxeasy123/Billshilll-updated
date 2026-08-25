@@ -485,6 +485,7 @@ class AccountingRepository(
                 financialYearStartMonth = it.financialYearStartMonth,
                 accountingMode = it.accountingMode,
                 businessType = it.businessType,
+                gstEnabled = it.gstEnabled,
                 isDefault = it.isDefault,
                 createdAt = it.createdAt
             )
@@ -507,6 +508,7 @@ class AccountingRepository(
             financialYearStartMonth = company.financialYearStartMonth,
             accountingMode = company.accountingMode,
             businessType = company.businessType,
+            gstEnabled = company.gstEnabled,
             isDefault = company.isDefault,
             createdAt = System.currentTimeMillis()
         )
@@ -581,7 +583,8 @@ class AccountingRepository(
         companyId: String,
         accountingMode: AccountingMode? = null,
         businessType: BusinessType? = null,
-        userId: String = "ADMIN"
+        userId: String = "ADMIN",
+        gstEnabled: Boolean? = null
     ): AccountingResult<Unit> {
         val existing = dao.getCompanyById(companyId)
             ?: return AccountingResult.Failure(AppError.ValidationError("Company not found"))
@@ -589,7 +592,8 @@ class AccountingRepository(
         dao.updateCompany(
             existing.copy(
                 accountingMode = accountingMode ?: existing.accountingMode,
-                businessType = businessType ?: existing.businessType
+                businessType = businessType ?: existing.businessType,
+                gstEnabled = gstEnabled ?: existing.gstEnabled
             )
         )
 
@@ -601,7 +605,7 @@ class AccountingRepository(
                 action = AuditAction.UPDATE,
                 entityType = "Company",
                 entityId = companyId,
-                description = "Accounting configuration changed: mode=${accountingMode ?: existing.accountingMode}, businessType=${businessType ?: existing.businessType}",
+                description = "Accounting configuration changed: mode=${accountingMode ?: existing.accountingMode}, businessType=${businessType ?: existing.businessType}, gstEnabled=${gstEnabled ?: existing.gstEnabled}",
                 performedBy = userId,
                 timestamp = System.currentTimeMillis(),
                 payloadJson = "{}"

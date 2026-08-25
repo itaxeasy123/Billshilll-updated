@@ -47,7 +47,8 @@ data class CompanyEntity(
     val isDefault: Boolean,
     val createdAt: Long,
     val accountingMode: AccountingMode = AccountingMode.ACCOUNT_ONLY,
-    val businessType: BusinessType = BusinessType.TRADING
+    val businessType: BusinessType = BusinessType.TRADING,
+    val gstEnabled: Boolean = true
 )
 
 @Entity(
