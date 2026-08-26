@@ -125,7 +125,6 @@ fun VoucherDetailDialog(
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Text("Particulars / Ledger", style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold), modifier = Modifier.weight(1.8f))
-                    Text("Dr / Cr", style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold), modifier = Modifier.weight(0.6f))
                     Text("Debit", style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold), modifier = Modifier.weight(1f))
                     Text("Credit", style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold), modifier = Modifier.weight(1f))
                 }
@@ -149,14 +148,6 @@ fun VoucherDetailDialog(
                                     Text(item.narration, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
                             }
-                            Text(
-                                text = if (item.type == DrCr.DEBIT) "Dr" else "Cr",
-                                style = MaterialTheme.typography.labelMedium.copy(
-                                    fontWeight = FontWeight.Bold,
-                                    color = if (item.type == DrCr.DEBIT) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.secondary
-                                ),
-                                modifier = Modifier.weight(0.6f)
-                            )
                             Text(
                                 text = if (item.type == DrCr.DEBIT) item.amount.formatPlain() else "--",
                                 style = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),

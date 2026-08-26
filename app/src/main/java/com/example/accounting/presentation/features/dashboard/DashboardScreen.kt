@@ -10,31 +10,17 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowForward
-import androidx.compose.material.icons.filled.AccountBalance
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.ArrowDownward
-import androidx.compose.material.icons.filled.ArrowUpward
-import androidx.compose.material.icons.filled.Book
 import androidx.compose.material.icons.filled.CallMade
 import androidx.compose.material.icons.filled.CallReceived
 import androidx.compose.material.icons.filled.CompareArrows
-import androidx.compose.material.icons.filled.Payments
 import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.filled.ReceiptLong
 import androidx.compose.material.icons.filled.ShoppingCart
-import androidx.compose.material.icons.filled.TrendingUp
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.ElevatedCard
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.Surface
@@ -42,20 +28,19 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.example.accounting.core.common.Money
 import com.example.accounting.domain.accounting.StandardSystemGroups
 import com.example.accounting.domain.accounting.Voucher
 import com.example.accounting.domain.accounting.VoucherType
 import com.example.accounting.domain.company.BusinessType
+import com.example.accounting.presentation.components.BusinessSnapshot
+import com.example.accounting.presentation.components.QuickActionSpec
+import com.example.accounting.presentation.components.QuickActions
+import com.example.accounting.presentation.components.recentTransactionsSection
 import com.example.accounting.presentation.viewmodel.AccountingUiState
 
 /**
@@ -102,19 +87,27 @@ fun DashboardScreen(
             Column {
                 Text("Quick Actions", style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold), color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Spacer(modifier = Modifier.height(8.dp))
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    QuickActionButton("Sale", Icons.Default.ReceiptLong, MaterialTheme.colorScheme.primaryContainer, MaterialTheme.colorScheme.onPrimaryContainer, Modifier.weight(1f)) { onOpenCreateVoucher(VoucherType.SALES) }
-                    QuickActionButton("Purchase", Icons.Default.ShoppingCart, MaterialTheme.colorScheme.surfaceVariant, MaterialTheme.colorScheme.onSurfaceVariant, Modifier.weight(1f)) { onOpenCreateVoucher(VoucherType.PURCHASE) }
-                    QuickActionButton("Receive", Icons.Default.CallReceived, MaterialTheme.colorScheme.secondaryContainer, MaterialTheme.colorScheme.onSecondaryContainer, Modifier.weight(1f)) { onOpenCreateVoucher(VoucherType.RECEIPT) }
-                    QuickActionButton("Pay", Icons.Default.CallMade, MaterialTheme.colorScheme.errorContainer, MaterialTheme.colorScheme.onErrorContainer, Modifier.weight(1f)) { onOpenCreateVoucher(VoucherType.PAYMENT) }
-                }
+                // Phase UI-03: now via the shared QuickActions row wrapper instead of two hand-
+                // rolled Rows of QuickAction calls - same items, same order, same colors/icons.
+                QuickActions(
+                    items = listOf(
+                        QuickActionSpec("Sale", Icons.Default.ReceiptLong, MaterialTheme.colorScheme.primaryContainer, MaterialTheme.colorScheme.onPrimaryContainer) { onOpenCreateVoucher(VoucherType.SALES) },
+                        QuickActionSpec("Purchase", Icons.Default.ShoppingCart, MaterialTheme.colorScheme.surfaceVariant, MaterialTheme.colorScheme.onSurfaceVariant) { onOpenCreateVoucher(VoucherType.PURCHASE) },
+                        QuickActionSpec("Receive", Icons.Default.CallReceived, MaterialTheme.colorScheme.secondaryContainer, MaterialTheme.colorScheme.onSecondaryContainer) { onOpenCreateVoucher(VoucherType.RECEIPT) },
+                        QuickActionSpec("Pay", Icons.Default.CallMade, MaterialTheme.colorScheme.errorContainer, MaterialTheme.colorScheme.onErrorContainer) { onOpenCreateVoucher(VoucherType.PAYMENT) }
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                )
                 Spacer(modifier = Modifier.height(8.dp))
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    QuickActionButton("Transfer", Icons.Default.CompareArrows, MaterialTheme.colorScheme.tertiaryContainer, MaterialTheme.colorScheme.onTertiaryContainer, Modifier.weight(1f)) { onOpenCreateVoucher(VoucherType.CONTRA) }
-                    QuickActionButton("Add Customer", Icons.Default.PersonAdd, MaterialTheme.colorScheme.surfaceVariant, MaterialTheme.colorScheme.onSurfaceVariant, Modifier.weight(1f)) { onAddCustomer() }
-                    QuickActionButton("Add Supplier", Icons.Default.PersonAdd, MaterialTheme.colorScheme.surfaceVariant, MaterialTheme.colorScheme.onSurfaceVariant, Modifier.weight(1f)) { onAddSupplier() }
-                    QuickActionButton("Add Item", Icons.Default.Add, MaterialTheme.colorScheme.surfaceVariant, MaterialTheme.colorScheme.onSurfaceVariant, Modifier.weight(1f)) { onAddItem() }
-                }
+                QuickActions(
+                    items = listOf(
+                        QuickActionSpec("Transfer", Icons.Default.CompareArrows, MaterialTheme.colorScheme.tertiaryContainer, MaterialTheme.colorScheme.onTertiaryContainer) { onOpenCreateVoucher(VoucherType.CONTRA) },
+                        QuickActionSpec("Add Customer", Icons.Default.PersonAdd, MaterialTheme.colorScheme.surfaceVariant, MaterialTheme.colorScheme.onSurfaceVariant) { onAddCustomer() },
+                        QuickActionSpec("Add Supplier", Icons.Default.PersonAdd, MaterialTheme.colorScheme.surfaceVariant, MaterialTheme.colorScheme.onSurfaceVariant) { onAddSupplier() },
+                        QuickActionSpec("Add Item", Icons.Default.Add, MaterialTheme.colorScheme.surfaceVariant, MaterialTheme.colorScheme.onSurfaceVariant) { onAddItem() }
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                )
             }
         }
 
@@ -122,122 +115,37 @@ fun DashboardScreen(
             Column {
                 Text("Business Snapshot", style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold), color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Spacer(modifier = Modifier.height(8.dp))
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    MetricCard("Cash", cashBalance, "Tap to view", Icons.Default.Payments, MaterialTheme.colorScheme.primary, Modifier.weight(1f).clickable { onOpenCash() })
-                    MetricCard("Bank", bankBalance, "Tap to view", Icons.Default.AccountBalance, MaterialTheme.colorScheme.primary, Modifier.weight(1f).clickable { onOpenBank() })
-                }
-                Spacer(modifier = Modifier.height(10.dp))
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    MetricCard("Receivables", receivables, "You are owed", Icons.Default.ArrowDownward, MaterialTheme.colorScheme.secondary, Modifier.weight(1f).clickable { onViewReports() })
-                    MetricCard("Payables", payables, "You owe", Icons.Default.ArrowUpward, MaterialTheme.colorScheme.error, Modifier.weight(1f).clickable { onViewReports() })
-                }
-                Spacer(modifier = Modifier.height(10.dp))
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    MetricCard("Sales", salesFigure, "Current Financial Year", Icons.Default.ReceiptLong, MaterialTheme.colorScheme.primary, Modifier.weight(1f).clickable { onOpenSales() })
-                    MetricCard("Purchases", purchasesFigure, "Current Financial Year", Icons.Default.ShoppingCart, MaterialTheme.colorScheme.primary, Modifier.weight(1f).clickable { onOpenPurchases() })
-                }
-                Spacer(modifier = Modifier.height(10.dp))
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    MetricCard(if (isService) "Surplus / Deficit" else "Profit / Loss", netProfit, "Current Financial Year", Icons.Default.TrendingUp, MaterialTheme.colorScheme.secondary, Modifier.weight(1f).clickable { onViewReports() })
-                    MetricCard("GST Payable", gstPayable, "Net position", Icons.Default.AccountBalance, MaterialTheme.colorScheme.tertiary, Modifier.weight(1f).clickable { onViewReports() })
-                }
-                Spacer(modifier = Modifier.height(10.dp))
-                MetricCard("Outstanding", outstanding, "Receivables + Payables", Icons.Default.AccountBalance, MaterialTheme.colorScheme.primary, Modifier.fillMaxWidth().clickable { onViewReports() })
-            }
-        }
-
-        item {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text("Recent Transactions", style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold))
-                Text(
-                    "View All",
-                    style = MaterialTheme.typography.labelMedium.copy(color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold),
-                    modifier = Modifier.clip(RoundedCornerShape(6.dp)).clickable { onViewAllDayBook() }.padding(4.dp)
+                // Phase UI-04: extracted into its own composable (BusinessSnapshot.kt) so this
+                // screen's body is a composition of named sections; income/expenditure is only
+                // passed when the current company is a SERVICE business (IncomeExpenditureReport
+                // has no meaning otherwise).
+                BusinessSnapshot(
+                    cashBalance = cashBalance,
+                    bankBalance = bankBalance,
+                    receivables = receivables,
+                    payables = payables,
+                    salesFigure = salesFigure,
+                    purchasesFigure = purchasesFigure,
+                    netProfit = netProfit,
+                    netProfitLabel = if (isService) "Surplus / Deficit" else "Profit / Loss",
+                    gstPayable = gstPayable,
+                    outstanding = outstanding,
+                    income = if (isService) uiState.incomeAndExpenditure?.income else null,
+                    expenditure = if (isService) uiState.incomeAndExpenditure?.expenditure else null,
+                    onOpenCash = onOpenCash,
+                    onOpenBank = onOpenBank,
+                    onOpenSales = onOpenSales,
+                    onOpenPurchases = onOpenPurchases,
+                    onViewReports = onViewReports
                 )
             }
         }
 
-        if (uiState.vouchers.isEmpty()) {
-            item {
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(12.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f))
-                ) {
-                    Column(modifier = Modifier.fillMaxWidth().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                        Icon(Icons.Default.Book, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(36.dp))
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text("No transactions in this period yet", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                }
-            }
-        } else {
-            items(uiState.vouchers.take(6), key = { it.voucherId }) { voucher ->
-                VoucherSummaryCard(voucher = voucher, onClick = { onVoucherClick(voucher) })
-            }
-        }
-    }
-}
-
-@Composable
-fun QuickActionButton(
-    title: String,
-    icon: ImageVector,
-    containerColor: Color,
-    contentColor: Color,
-    modifier: Modifier = Modifier,
-    onClick: () -> Unit
-) {
-    Surface(
-        shape = RoundedCornerShape(12.dp),
-        color = containerColor,
-        modifier = modifier.clip(RoundedCornerShape(12.dp)).clickable { onClick() }
-    ) {
-        Column(
-            modifier = Modifier.padding(vertical = 12.dp, horizontal = 4.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            Icon(imageVector = icon, contentDescription = title, tint = contentColor, modifier = Modifier.size(20.dp))
-            Spacer(modifier = Modifier.height(6.dp))
-            Text(
-                text = title,
-                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, fontSize = 10.sp),
-                color = contentColor,
-                textAlign = TextAlign.Center,
-                maxLines = 2
-            )
-        }
-    }
-}
-
-@Composable
-fun MetricCard(
-    title: String,
-    amount: Money,
-    subtitle: String,
-    icon: ImageVector,
-    iconTint: Color,
-    modifier: Modifier = Modifier
-) {
-    ElevatedCard(shape = RoundedCornerShape(14.dp), modifier = modifier) {
-        Column(modifier = Modifier.padding(14.dp)) {
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Text(text = title, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
-                Icon(imageVector = icon, contentDescription = null, tint = iconTint, modifier = Modifier.size(18.dp))
-            }
-            Spacer(modifier = Modifier.height(8.dp))
-            Text(
-                text = amount.formatPlain(),
-                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, fontSize = 16.sp, fontFamily = FontFamily.Monospace),
-                maxLines = 1
-            )
-            Spacer(modifier = Modifier.height(4.dp))
-            Text(text = subtitle, style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp), color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
-        }
+        recentTransactionsSection(
+            vouchers = uiState.vouchers.take(6),
+            onVoucherClick = onVoucherClick,
+            onViewAll = onViewAllDayBook
+        )
     }
 }
 

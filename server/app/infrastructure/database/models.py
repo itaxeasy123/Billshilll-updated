@@ -246,7 +246,11 @@ class GstTransaction(Base):
     gst_transaction_id: Mapped[str] = mapped_column(String, primary_key=True)
     company_id: Mapped[str] = mapped_column(String, index=True)
     financial_year_id: Mapped[str] = mapped_column(String, index=True)
-    voucher_id: Mapped[str] = mapped_column(String, ForeignKey("vouchers.voucher_id"), index=True)
+    # GST-only Sync Path: nullable (was NOT NULL) - a GST-only company's transaction has no
+    # accounting Voucher at all. Mirrors the Android Room schema's identical relaxation. NULL
+    # bypasses SQL foreign-key enforcement (a NULL child key is never checked against the parent),
+    # so every existing row (always a real voucher_id) is unaffected.
+    voucher_id: Mapped[str | None] = mapped_column(String, ForeignKey("vouchers.voucher_id"), nullable=True, index=True)
     voucher_type: Mapped[str] = mapped_column(String)
     party_ledger_id: Mapped[str] = mapped_column(String, index=True)
     party_gstin: Mapped[str] = mapped_column(String, default="")

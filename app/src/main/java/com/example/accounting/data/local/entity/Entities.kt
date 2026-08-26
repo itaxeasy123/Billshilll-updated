@@ -185,7 +185,12 @@ data class LedgerEntity(
     val isSystem: Boolean,
     val isActive: Boolean,
     val hsnSacCode: String,
-    val defaultTaxRate: Double
+    val defaultTaxRate: Double,
+    /** Rule 30 (Party/Customer/Supplier Data Validation) - stores [GstRegistrationStatus.name], or
+     * `null` for UNKNOWN. Was declared on the domain [Ledger] model with no backing column until
+     * this field was added - never persisted before, so every pre-existing row reads back `null`
+     * (honestly UNKNOWN), never a guessed REGISTERED/UNREGISTERED. */
+    val gstRegistrationStatus: String? = null
 )
 
 @Entity(
@@ -441,7 +446,11 @@ data class GstTransactionEntity(
     @PrimaryKey val gstTransactionId: String,
     val companyId: String,
     val financialYearId: String,
-    val voucherId: String,
+    /** UI-06/Architecture Checkpoint: nullable (was non-null) - a GST-only company's transaction
+     * has no [VoucherEntity] at all. `null` bypasses SQLite's FK check entirely (a NULL child key
+     * is never validated against the parent), so every existing row (always a real voucherId)
+     * keeps working unchanged; only a genuinely voucher-less GST transaction can now use `null`. */
+    val voucherId: String?,
     val voucherType: VoucherType,
     val partyLedgerId: String,
     val partyGstin: String,

@@ -15,6 +15,8 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.filled.FileDownload
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -28,6 +30,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.accounting.application.reports.HsnSacSummaryRow
 import com.example.accounting.domain.accounting.Ledger
@@ -59,6 +62,11 @@ fun ReportsCenterScreen(
     uiState: AccountingUiState,
     onOpenDayBook: () -> Unit,
     onOpenAllLedgers: () -> Unit,
+    /** Export/Share only ever fire for a [reportKey] this screen itself decided is genuinely
+     * backed by [com.example.accounting.application.export.ExportManagementService] - Ledger
+     * Statement/Day Book/Income & Expenditure have no `ExportType` today and never reach here. */
+    onExportReport: (reportKey: String) -> Unit = {},
+    onShareReport: (reportKey: String) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     var category by remember { mutableStateOf<ReportCategory?>(null) }
@@ -85,7 +93,7 @@ fun ReportsCenterScreen(
         }
 
         when (category) {
-            ReportCategory.FINANCIAL -> FinancialCategory(uiState)
+            ReportCategory.FINANCIAL -> FinancialCategory(uiState, onExportReport, onShareReport)
             ReportCategory.SALES_PURCHASE -> SalesPurchaseCategory(uiState)
             ReportCategory.ACCOUNTS -> AccountsCategory(uiState, onOpenDayBook, onOpenAllLedgers)
             ReportCategory.GST -> GstCategory(uiState)
@@ -96,7 +104,7 @@ fun ReportsCenterScreen(
 }
 
 @Composable
-private fun FinancialCategory(uiState: AccountingUiState) {
+private fun FinancialCategory(uiState: AccountingUiState, onExportReport: (String) -> Unit, onShareReport: (String) -> Unit) {
     var reportKey by remember { mutableStateOf<String?>(null) }
     if (reportKey == null) {
         ReportMenu(
@@ -104,8 +112,28 @@ private fun FinancialCategory(uiState: AccountingUiState) {
         ) { reportKey = it }
         return
     }
+    // Export/Share exist only for ExportManagementService.exportTrialBalance/exportProfitAndLoss/
+    // exportBalanceSheet - Cash Flow has no ExportType, and a SERVICE company's "Profit & Loss"
+    // menu item renders IncomeAndExpenditureView (below), for which no exportIncomeAndExpenditure
+    // method exists either - so that combination is excluded too, never a button for an
+    // unimplemented operation.
+    val isServiceCompany = uiState.currentCompany?.businessType == BusinessType.SERVICE
+    val supportsExportShare = reportKey == "Trial Balance" || reportKey == "Balance Sheet" || (reportKey == "Profit & Loss" && !isServiceCompany)
     Column(modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
-        BackRow(reportKey!!) { reportKey = null }
+        BackRow(
+            reportKey!!,
+            onBack = { reportKey = null },
+            actions = {
+                if (supportsExportShare) {
+                    IconButton(onClick = { onExportReport(reportKey!!) }) {
+                        Icon(Icons.Default.FileDownload, contentDescription = "Export")
+                    }
+                    IconButton(onClick = { onShareReport(reportKey!!) }) {
+                        Icon(Icons.Default.Share, contentDescription = "Share")
+                    }
+                }
+            }
+        )
         when (reportKey) {
             "Trial Balance" -> TrialBalanceView(report = uiState.trialBalance)
             "Profit & Loss" -> if (uiState.currentCompany?.businessType == BusinessType.SERVICE) {
@@ -141,7 +169,7 @@ private fun SalesPurchaseCategory(uiState: AccountingUiState) {
         return
     }
     Column(modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
-        BackRow(reportKey!!) { reportKey = null }
+        BackRow(reportKey!!, onBack = { reportKey = null })
         when (reportKey) {
             "Sales Register" -> VoucherRegisterList(uiState.vouchers.filter { it.voucherType == VoucherType.SALES })
             "Purchase Register" -> VoucherRegisterList(uiState.vouchers.filter { it.voucherType == VoucherType.PURCHASE })
@@ -168,7 +196,7 @@ private fun AccountsCategory(uiState: AccountingUiState, onOpenDayBook: () -> Un
     val cashLedgerIds = remember(uiState.ledgers) { uiState.ledgers.filter { it.groupId.startsWith(StandardSystemGroups.CASH_GROUP_ID) }.map { it.ledgerId }.toSet() }
     val bankLedgerIds = remember(uiState.ledgers) { uiState.ledgers.filter { it.groupId.startsWith(StandardSystemGroups.BANK_GROUP_ID) }.map { it.ledgerId }.toSet() }
     Column(modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
-        BackRow(reportKey!!) { reportKey = null }
+        BackRow(reportKey!!, onBack = { reportKey = null })
         when (reportKey) {
             "Cash Book" -> VoucherRegisterList(uiState.vouchers.filter { v -> v.items.any { it.ledgerId in cashLedgerIds } })
             "Bank Book" -> VoucherRegisterList(uiState.vouchers.filter { v -> v.items.any { it.ledgerId in bankLedgerIds } })
@@ -186,7 +214,7 @@ private fun GstCategory(uiState: AccountingUiState) {
         return
     }
     Column(modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
-        BackRow(reportKey!!) { reportKey = null }
+        BackRow(reportKey!!, onBack = { reportKey = null })
         when (reportKey) {
             "GST Summary" -> GSTCenterView(report = uiState.gstSummary)
             "HSN/SAC Summary" -> HsnSacSummaryView(uiState.hsnSacSummary)
@@ -217,7 +245,7 @@ private fun AnalysisCategory(uiState: AccountingUiState) {
         return
     }
     Column(modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
-        BackRow(reportKey!!) { reportKey = null }
+        BackRow(reportKey!!, onBack = { reportKey = null })
         if (reportKey == "Ratio Analysis") RatioAnalysisView(uiState.ratioAnalysisReport)
     }
 }
@@ -287,10 +315,26 @@ private fun ReportMenu(reports: List<Pair<String, Boolean>>, onSelect: (String) 
 }
 
 @Composable
-private fun BackRow(title: String, onBack: () -> Unit) {
-    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 8.dp)) {
-        IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back") }
-        Text(title, style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold))
+private fun BackRow(title: String, onBack: () -> Unit, actions: @Composable () -> Unit = {}) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        // weight(1f) + ellipsis: a long report title must never push the trailing action icons
+        // (when present) off a narrow (320dp-360dp) screen - the same overflow class of bug found
+        // and fixed in AppTopBar.kt earlier this session.
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+            IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back") }
+            Text(
+                title,
+                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f, fill = false)
+            )
+        }
+        actions()
     }
 }
 

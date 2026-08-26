@@ -194,7 +194,8 @@ data class GSTSummaryExportDto(
  */
 data class GSTTransactionExportDto(
     val gstTransactionId: String,
-    val voucherId: String,
+    /** Architecture Checkpoint: nullable - a GST-only company's transaction has no Voucher. */
+    val voucherId: String?,
     val voucherType: VoucherType,
     val partyGstin: String,
     val placeOfSupply: String,

@@ -46,10 +46,15 @@ enum class SyncOperation {
     CREATE_TRADE_DOCUMENT,
     ISSUE_TRADE_DOCUMENT,
     CONVERT_TRADE_DOCUMENT,
-    CANCEL_TRADE_DOCUMENT
+    CANCEL_TRADE_DOCUMENT,
+    /** Architecture Checkpoint (GST-only path) - a [SyncGstTransactionDto] batch with no
+     * [SyncEvent.voucher] at all. Every other POST_* operation above always carries a real
+     * voucher; this is the only operation that deliberately never does, so a future server
+     * handler for it must never expect or require one. */
+    POST_GST_TRANSACTION
 }
 
-enum class SyncAggregateType { VOUCHER, LEDGER, PARTY, INVOICE, TRADE_DOCUMENT }
+enum class SyncAggregateType { VOUCHER, LEDGER, PARTY, INVOICE, TRADE_DOCUMENT, GST_TRANSACTION }
 
 @JsonClass(generateAdapter = true)
 data class SyncJournalLineDto(
@@ -76,6 +81,16 @@ data class SyncStockLineDto(
 @JsonClass(generateAdapter = true)
 data class SyncGstTransactionDto(
     val gstTransactionId: String,
+    /** Transaction/Contract Hardening - the explicit business/document classification (a real
+     * [com.example.accounting.domain.accounting.VoucherType] name, e.g. "SALES") this GST fact
+     * belongs to. Required, never derived by the reader from [direction] - OUTPUT does not always
+     * mean SALES (a Credit Note is also OUTPUT-direction), so a server or future consumer must
+     * never infer this. For the accounting path this mirrors [GstTransaction.voucherType], which
+     * already existed but was previously only reachable via the top-level `SyncEvent.voucher`
+     * object - not present at all for the GST-only path (`voucher` is null there). Carrying it
+     * per-line here means every consumer of this DTO can read the classification the same way
+     * regardless of which path produced it. */
+    val voucherType: String,
     val partyLedgerId: String,
     val partyGstin: String,
     val placeOfSupply: String,

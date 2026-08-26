@@ -1,5 +1,6 @@
 package com.example.accounting.presentation.components
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -8,7 +9,8 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.ElevatedCard
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.Text
@@ -63,7 +65,16 @@ fun SectionCard(
     }
 
     if (elevated) {
-        ElevatedCard(shape = shape, modifier = cardModifier) { inner() }
+        // See StatCard.kt's same fix - ElevatedCard has no `border` param in this Compose
+        // Material3 version, and its shadow-only boundary reads as "no outline" on several
+        // device/theme combinations; Card (base) reproduces the same look plus a real border.
+        Card(
+            shape = shape,
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+            elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+            modifier = cardModifier
+        ) { inner() }
     } else {
         OutlinedCard(shape = shape, modifier = cardModifier) { inner() }
     }

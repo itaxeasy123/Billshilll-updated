@@ -8,14 +8,18 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AccountBalance
 import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.ArrowDropDown
@@ -70,6 +74,8 @@ fun AppTopBar(
     onNewCompanyClicked: () -> Unit,
     onSearchClicked: () -> Unit = {},
     onProfileClicked: () -> Unit = {},
+    canGoBack: Boolean = false,
+    onBack: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     var companyDropdownOpen by remember { mutableStateOf(false) }
@@ -78,7 +84,10 @@ fun AppTopBar(
     Surface(
         color = MaterialTheme.colorScheme.surface,
         tonalElevation = 2.dp,
-        modifier = modifier.fillMaxWidth()
+        // Under enableEdgeToEdge() this Surface draws behind the status bar unless it claims that
+        // inset itself - without this, the whole bar (and everything below it) renders shifted up
+        // under the status bar icons/notch.
+        modifier = modifier.fillMaxWidth().windowInsetsPadding(WindowInsets.statusBars)
     ) {
         Column(
             modifier = Modifier
@@ -89,6 +98,14 @@ fun AppTopBar(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                // Visible back affordance for any drill-down route (Ledger Statement, Search,
+                // Profile, Subscription, Settings & Sync, Data Tools, ...) - previously only the
+                // system back gesture/button worked here, with zero on-screen way back.
+                if (canGoBack) {
+                    IconButton(onClick = onBack, modifier = Modifier.testTag("top_bar_back")) {
+                        Icon(imageVector = Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    }
+                }
                 // Company & Brand Selector - own full-width row so a long name/GSTIN never has to
                 // fight the FY/sync/search/profile row below for space (that fight is what
                 // collapsed this column to ~3dp wide on a standard 360dp phone, forcing the GSTIN

@@ -14,7 +14,10 @@ data class GstTransaction(
     val gstTransactionId: String,
     val companyId: String,
     val financialYearId: String,
-    val voucherId: String,
+    /** UI-06/Architecture Checkpoint: nullable (was non-null) - a GST-only company's transaction
+     * has no accounting Voucher at all. See [com.example.accounting.data.local.entity.GstTransactionEntity.voucherId]
+     * for the persistence-side rationale. */
+    val voucherId: String?,
     val voucherType: VoucherType,
     val partyLedgerId: String,
     val partyGstin: String,

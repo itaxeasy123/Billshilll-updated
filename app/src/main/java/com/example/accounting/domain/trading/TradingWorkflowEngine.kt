@@ -10,6 +10,7 @@ import com.example.accounting.domain.inventory.StockDirection
 import com.example.accounting.domain.inventory.VoucherStockLine
 import com.example.accounting.domain.taxation.gst.GstCalculationEngine
 import com.example.accounting.domain.taxation.gst.GstDirection
+import com.example.accounting.domain.taxation.gst.GstSupplyNature
 import com.example.accounting.domain.taxation.gst.GstTransaction
 import com.example.accounting.domain.taxation.gst.GstTransactionFacts
 import com.example.accounting.domain.taxation.gst.SupplyType
@@ -36,7 +37,11 @@ data class TradingLineInput(
     val quantity: Quantity,
     val rate: Money,
     val gstRatePercent: Double,
-    val cessRatePercent: Double = 0.0
+    val cessRatePercent: Double = 0.0,
+    /** Tax Treatment (UI-06) - defaults to NORMAL (Taxable), i.e. byte-identical behavior to
+     * before this field existed: geography (company vs place-of-supply) still decides Intra/Inter.
+     * EXPORT/EXEMPT/NIL_RATED bypass geography entirely via [GstCalculationEngine.calculateDetailed]. */
+    val supplyNature: GstSupplyNature = GstSupplyNature.NORMAL
 )
 
 /** A resolved ledger reference (companyId-suffixed id + display name) - supplied by the caller
@@ -87,6 +92,66 @@ object TradingWorkflowEngine {
         companyStateCode = companyStateCode, placeOfSupply = placeOfSupply, lines = lines,
         gstLedgers = gstLedgers, roundOffLedgerId = roundOffLedgerId, roundOffLedgerName = roundOffLedgerName
     )
+
+    /**
+     * GST-only Sale (Architecture Checkpoint follow-up, Option B continuation) - for a company
+     * that does not maintain accounting at all. Computes exactly the same per-line GST facts
+     * [buildSale] computes internally (same [GstCalculationEngine.calculateDetailed] call, same
+     * [GstSupplyNature] handling) but produces ONLY [GstTransaction] rows - no [JournalItem]s, no
+     * [com.example.accounting.domain.inventory.VoucherStockLine]s, no GST-duty-ledger references,
+     * no Round Off. There is deliberately no `voucherId` parameter - every returned row's
+     * `voucherId` is `null`, matching [GstTransaction.voucherId]'s Architecture-Checkpoint
+     * nullability. This is intentionally a separate, smaller function rather than a refactor of
+     * [build] - `build`'s loop also computes running totals for Round Off and constructs stock
+     * lines, none of which apply here, and reshaping that already-tested function carries far more
+     * regression risk than this ~15-line, self-contained addition that calls the same engine.
+     */
+    fun buildGstOnlySale(
+        companyId: String,
+        financialYearId: String,
+        customerLedgerId: String,
+        customerGstin: String,
+        companyStateCode: String,
+        placeOfSupply: String,
+        lines: List<TradingLineInput>
+    ): List<GstTransaction> {
+        require(lines.isNotEmpty()) { "At least one line item is required." }
+        return lines.mapIndexed { index, line ->
+            val lineTaxable = VoucherStockLine.computeAmount(line.quantity, line.rate)
+            val breakdown = GstCalculationEngine.calculateDetailed(
+                GstTransactionFacts(
+                    taxableAmount = lineTaxable,
+                    gstRatePercent = line.gstRatePercent,
+                    cessRatePercent = line.cessRatePercent,
+                    supplierStateCode = companyStateCode,
+                    placeOfSupply = placeOfSupply,
+                    supplyNature = line.supplyNature
+                )
+            )
+            GstTransaction(
+                gstTransactionId = UUID.randomUUID().toString(),
+                companyId = companyId,
+                financialYearId = financialYearId,
+                voucherId = null,
+                voucherType = VoucherType.SALES,
+                partyLedgerId = customerLedgerId,
+                partyGstin = customerGstin,
+                placeOfSupply = placeOfSupply,
+                supplyType = breakdown.supplyType,
+                itemId = line.itemId,
+                hsnSacCode = line.hsnSacCode,
+                quantity = line.quantity,
+                taxableAmount = breakdown.taxableAmount,
+                gstRatePercent = line.gstRatePercent,
+                cgst = breakdown.cgstAmount,
+                sgst = breakdown.sgstAmount,
+                igst = breakdown.igstAmount,
+                cess = breakdown.cessAmount,
+                direction = GstDirection.OUTPUT,
+                lineOrder = index + 1
+            )
+        }
+    }
 
     fun buildPurchase(
         voucherId: String, companyId: String, financialYearId: String,
@@ -140,10 +205,20 @@ object TradingWorkflowEngine {
                     gstRatePercent = line.gstRatePercent,
                     cessRatePercent = line.cessRatePercent,
                     supplierStateCode = companyStateCode,
-                    placeOfSupply = placeOfSupply
+                    placeOfSupply = placeOfSupply,
+                    supplyNature = line.supplyNature
                 )
             )
-            resolvedSupplyType = breakdown.supplyType
+            // UI-06: only a NORMAL-nature line may decide the invoice-level CGST/SGST-vs-IGST
+            // routing below - EXPORT/EXEMPT/NIL_RATED lines always resolve to a zero-tax
+            // SupplyType.EXPORT/EXEMPT and must never be allowed to overwrite this with a line
+            // that comes later in the list. Before this field existed every line was always
+            // NORMAL, so this condition was always true and this is a no-op for old behavior;
+            // once a line can be non-NORMAL, letting it win here would silently drop the
+            // CGST/SGST/IGST postings for every real taxable line already accumulated in this
+            // same invoice (the party line's total already includes that tax - the ledger entries
+            // for it would simply vanish, unbalancing the voucher).
+            if (line.supplyNature == GstSupplyNature.NORMAL) resolvedSupplyType = breakdown.supplyType
             taxableTotal += breakdown.taxableAmount
             cgstTotal += breakdown.cgstAmount
             sgstTotal += breakdown.sgstAmount

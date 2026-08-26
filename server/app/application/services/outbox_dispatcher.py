@@ -11,6 +11,7 @@ import json
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.application.commands.gst_transaction_commands import apply_gst_transaction_event
 from app.application.commands.invoice_commands import apply_invoice_event
 from app.application.commands.ledger_commands import apply_ledger_event
 from app.application.commands.party_commands import apply_party_event
@@ -35,6 +36,10 @@ _INVOICE_OPERATIONS = {"CREATE_DRAFT_INVOICE", "CANCEL_DRAFT_INVOICE", "LINK_INV
 # Phase 7B - Document/Voucher Lifecycle Architecture. Purely additive: every set/branch above is
 # unchanged.
 _TRADE_DOCUMENT_OPERATIONS = {"CREATE_TRADE_DOCUMENT", "ISSUE_TRADE_DOCUMENT", "CONVERT_TRADE_DOCUMENT", "CANCEL_TRADE_DOCUMENT"}
+# GST-Only Sync Path - purely additive: every set/branch above is unchanged. A GST-only
+# transaction never dispatches through _VOUCHER_OPERATIONS/apply_voucher_event - it has no
+# accounting effect at all, so it gets its own dedicated command module.
+_GST_TRANSACTION_OPERATIONS = {"POST_GST_TRANSACTION"}
 
 
 class DispatchResult:
@@ -60,6 +65,8 @@ async def dispatch_event(db: AsyncSession, event: SyncEvent) -> DispatchResult:
             result = await apply_invoice_event(db, event)
         elif event.operation in _TRADE_DOCUMENT_OPERATIONS:
             result = await apply_trade_document_event(db, event)
+        elif event.operation in _GST_TRANSACTION_OPERATIONS:
+            result = await apply_gst_transaction_event(db, event)
         else:
             from app.domain.errors import ValidationError
             raise ValidationError(f"Unknown sync operation '{event.operation}'.")

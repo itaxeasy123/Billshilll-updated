@@ -179,7 +179,7 @@ internal object VoucherPostingEngine {
                         },
                         gstTransactions = gstTransactions.map {
                             SyncGstTransactionDto(
-                                it.gstTransactionId, it.partyLedgerId, it.partyGstin, it.placeOfSupply, it.supplyType.name,
+                                it.gstTransactionId, it.voucherType.name, it.partyLedgerId, it.partyGstin, it.placeOfSupply, it.supplyType.name,
                                 it.itemId, it.hsnSacCode, it.quantityRaw, it.taxableAmountPaise, it.gstRatePercent,
                                 it.cgstPaise, it.sgstPaise, it.igstPaise, it.cessPaise, it.direction.name, it.lineOrder
                             )
@@ -365,6 +365,27 @@ class DatabaseTransaction(
     ): Result<Unit> = runCatching {
         database.withTransaction {
             VoucherPostingEngine.post(dao, voucher, items, idempotencyKey, userId, stockLines, gstTransactions)
+        }
+    }
+
+    /**
+     * GST-only Sale (Architecture Checkpoint follow-up) - persists [gstTransactions] (every row's
+     * `voucherId` already `null`, set by [com.example.accounting.domain.trading.TradingWorkflowEngine.buildGstOnlySale])
+     * and enqueues [outboxItem] atomically. Deliberately does NOT call [VoucherPostingEngine.post] -
+     * there is no [VoucherEntity], no [JournalItemEntity], and no ledger balance to touch for this
+     * path, so none of that engine's steps apply. The idempotent-replay guard is duplicated here
+     * (one `if` check, not a re-implementation of any posting logic) rather than routed through
+     * [VoucherPostingEngine], since every other step of that engine is inapplicable.
+     */
+    suspend fun postGstOnlyTransactionsAtomic(
+        gstTransactions: List<GstTransactionEntity>,
+        outboxItem: OutboxSyncEntity
+    ): Result<Unit> = runCatching {
+        database.withTransaction {
+            if (dao.getOutboxByIdempotencyKey(outboxItem.idempotencyKey) == null) {
+                dao.insertGstTransactions(gstTransactions)
+                dao.insertOutboxItem(outboxItem)
+            }
         }
     }
 

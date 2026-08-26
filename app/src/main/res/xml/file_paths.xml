@@ -1,4 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <paths>
     <files-path name="documents" path="documents/" />
+    <!-- Covers AccountingViewModel.exportVoucherAndShare/exportReportAndShare, both of which write
+         directly to the app cache root (getApplication().cacheDir) before handing the file to
+         ShareAdapter.buildShareIntent - without this entry, FileProvider.getUriForFile throws
+         IllegalArgumentException for any file under cacheDir (confirmed live: this crashed the app
+         the first time exportReportAndShare was ever wired to a real UI button). -->
+    <cache-path name="exports" path="." />
 </paths>

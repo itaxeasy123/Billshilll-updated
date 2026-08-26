@@ -1,6 +1,8 @@
 package com.example.accounting.presentation.features.profile
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -8,26 +10,34 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
-import androidx.compose.material3.Button
+import androidx.compose.material.icons.filled.Business
+import androidx.compose.material.icons.filled.Person
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.example.accounting.domain.rendering.BusinessProfile
 import com.example.accounting.domain.rendering.IndividualProfile
+import com.example.accounting.presentation.components.ActionButton
+import com.example.accounting.presentation.components.FormField
 import com.example.accounting.presentation.components.SectionCard
+import com.example.accounting.presentation.theme.Spacing
 
 /**
  * Phase 7J UI: "Profile & Business Setup" - reached from the persistent top-bar icon, never a
@@ -72,6 +82,25 @@ fun ProfileScreen(
     }
 }
 
+/** Small rounded icon badge matching `AppTopBar`'s company-icon treatment, reused here so each
+ * profile section reads as a distinct, deliberately-designed block instead of a plain text label
+ * over a form (this is what "not customized professionally" was about - not new business logic). */
+@Composable
+private fun ProfileSectionHeader(icon: androidx.compose.ui.graphics.vector.ImageVector, title: String) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(
+            modifier = Modifier
+                .size(36.dp)
+                .background(MaterialTheme.colorScheme.primaryContainer, RoundedCornerShape(8.dp)),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(imageVector = icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+        }
+        Spacer(modifier = Modifier.width(Spacing.sm))
+        Text(title, style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold))
+    }
+}
+
 @Composable
 private fun BusinessProfileSection(
     profile: BusinessProfile?,
@@ -85,27 +114,31 @@ private fun BusinessProfileSection(
     var gstin by remember(profile) { mutableStateOf(profile?.gstin ?: "") }
     var pan by remember(profile) { mutableStateOf(profile?.pan ?: "") }
 
-    SectionCard(elevated = true, title = "Business Profile") {
-        Spacer(modifier = Modifier.height(8.dp))
-        OutlinedTextField(value = businessName, onValueChange = { businessName = it }, label = { Text("Trade name") }, modifier = Modifier.fillMaxWidth())
-        Spacer(modifier = Modifier.height(8.dp))
-        OutlinedTextField(value = legalName, onValueChange = { legalName = it }, label = { Text("Legal name") }, modifier = Modifier.fillMaxWidth())
-        Spacer(modifier = Modifier.height(8.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedTextField(value = phone, onValueChange = { phone = it }, label = { Text("Phone") }, modifier = Modifier.weight(1f))
-            OutlinedTextField(value = email, onValueChange = { email = it }, label = { Text("Email") }, modifier = Modifier.weight(1f))
+    SectionCard(elevated = true) {
+        ProfileSectionHeader(Icons.Default.Business, "Business Profile")
+        Spacer(modifier = Modifier.height(Spacing.md))
+        FormField(value = businessName, onValueChange = { businessName = it }, label = "Trade name", modifier = Modifier.fillMaxWidth())
+        Spacer(modifier = Modifier.height(Spacing.sm))
+        FormField(value = legalName, onValueChange = { legalName = it }, label = "Legal name", modifier = Modifier.fillMaxWidth())
+        Spacer(modifier = Modifier.height(Spacing.sm))
+        Row(horizontalArrangement = Arrangement.spacedBy(Spacing.sm)) {
+            FormField(value = phone, onValueChange = { phone = it }, label = "Phone", keyboardType = KeyboardType.Phone, modifier = Modifier.weight(1f))
+            FormField(value = email, onValueChange = { email = it }, label = "Email", keyboardType = KeyboardType.Email, modifier = Modifier.weight(1f))
         }
-        Spacer(modifier = Modifier.height(8.dp))
-        OutlinedTextField(value = address, onValueChange = { address = it }, label = { Text("Address") }, modifier = Modifier.fillMaxWidth())
-        Spacer(modifier = Modifier.height(8.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedTextField(value = gstin, onValueChange = { gstin = it }, label = { Text("GSTIN") }, modifier = Modifier.weight(1f))
-            OutlinedTextField(value = pan, onValueChange = { pan = it }, label = { Text("PAN") }, modifier = Modifier.weight(1f))
+        Spacer(modifier = Modifier.height(Spacing.sm))
+        FormField(value = address, onValueChange = { address = it }, label = "Address", modifier = Modifier.fillMaxWidth())
+        Spacer(modifier = Modifier.height(Spacing.sm))
+        Row(horizontalArrangement = Arrangement.spacedBy(Spacing.sm)) {
+            FormField(value = gstin, onValueChange = { gstin = it }, label = "GSTIN", modifier = Modifier.weight(1f))
+            FormField(value = pan, onValueChange = { pan = it }, label = "PAN", modifier = Modifier.weight(1f))
         }
-        Spacer(modifier = Modifier.height(10.dp))
-        Button(onClick = { onSave(businessName, legalName, address, phone, email, gstin, pan) }, enabled = businessName.isNotBlank()) {
-            Text("Save Business Profile")
-        }
+        Spacer(modifier = Modifier.height(Spacing.md))
+        ActionButton(
+            text = "Save Business Profile",
+            onClick = { onSave(businessName, legalName, address, phone, email, gstin, pan) },
+            enabled = businessName.isNotBlank(),
+            modifier = Modifier.fillMaxWidth()
+        )
     }
 }
 
@@ -120,21 +153,25 @@ private fun IndividualProfileSection(
     var email by remember(profile) { mutableStateOf(profile?.email ?: "") }
     var pan by remember(profile) { mutableStateOf(profile?.pan ?: "") }
 
-    SectionCard(elevated = true, title = "Individual Profile") {
-        Spacer(modifier = Modifier.height(8.dp))
-        OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("Full name") }, modifier = Modifier.fillMaxWidth())
-        Spacer(modifier = Modifier.height(8.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedTextField(value = phone, onValueChange = { phone = it }, label = { Text("Phone") }, modifier = Modifier.weight(1f))
-            OutlinedTextField(value = email, onValueChange = { email = it }, label = { Text("Email") }, modifier = Modifier.weight(1f))
+    SectionCard(elevated = true) {
+        ProfileSectionHeader(Icons.Default.Person, "Individual Profile")
+        Spacer(modifier = Modifier.height(Spacing.md))
+        FormField(value = name, onValueChange = { name = it }, label = "Full name", modifier = Modifier.fillMaxWidth())
+        Spacer(modifier = Modifier.height(Spacing.sm))
+        Row(horizontalArrangement = Arrangement.spacedBy(Spacing.sm)) {
+            FormField(value = phone, onValueChange = { phone = it }, label = "Phone", keyboardType = KeyboardType.Phone, modifier = Modifier.weight(1f))
+            FormField(value = email, onValueChange = { email = it }, label = "Email", keyboardType = KeyboardType.Email, modifier = Modifier.weight(1f))
         }
-        Spacer(modifier = Modifier.height(8.dp))
-        OutlinedTextField(value = address, onValueChange = { address = it }, label = { Text("Address") }, modifier = Modifier.fillMaxWidth())
-        Spacer(modifier = Modifier.height(8.dp))
-        OutlinedTextField(value = pan, onValueChange = { pan = it }, label = { Text("PAN") }, modifier = Modifier.fillMaxWidth())
-        Spacer(modifier = Modifier.height(10.dp))
-        Button(onClick = { onSave(name, address, phone, email, pan) }, enabled = name.isNotBlank()) {
-            Text("Save Individual Profile")
-        }
+        Spacer(modifier = Modifier.height(Spacing.sm))
+        FormField(value = address, onValueChange = { address = it }, label = "Address", modifier = Modifier.fillMaxWidth())
+        Spacer(modifier = Modifier.height(Spacing.sm))
+        FormField(value = pan, onValueChange = { pan = it }, label = "PAN", modifier = Modifier.fillMaxWidth())
+        Spacer(modifier = Modifier.height(Spacing.md))
+        ActionButton(
+            text = "Save Individual Profile",
+            onClick = { onSave(name, address, phone, email, pan) },
+            enabled = name.isNotBlank(),
+            modifier = Modifier.fillMaxWidth()
+        )
     }
 }

@@ -1,9 +1,11 @@
 package com.example.accounting.presentation
 
+import android.content.Intent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
@@ -50,6 +52,8 @@ import androidx.compose.material3.windowsizeclass.WindowWidthSizeClass
 import com.example.accounting.presentation.navigation.AdaptiveNavigationType
 import com.example.accounting.presentation.navigation.AppRoute
 import com.example.accounting.presentation.navigation.getAdaptiveNavigationType
+import com.example.accounting.presentation.theme.Breakpoints
+import com.example.accounting.presentation.components.AppDivider
 import com.example.accounting.presentation.components.AppTopBar
 import com.example.accounting.presentation.components.CreateBankUpiProfileDialog
 import com.example.accounting.presentation.components.CreateCompanyDialog
@@ -170,7 +174,7 @@ fun MainAppScreen(
     val useRail = adaptiveNavType == AdaptiveNavigationType.NAVIGATION_RAIL || adaptiveNavType == AdaptiveNavigationType.PERMANENT_NAVIGATION_DRAWER
 
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
-        val isExpanded = useRail || maxWidth >= 600.dp
+        val isExpanded = useRail || maxWidth >= Breakpoints.tablet
 
         Scaffold(
             topBar = {
@@ -186,20 +190,30 @@ fun MainAppScreen(
                     onSyncClicked = { viewModel.triggerSync() },
                     onNewCompanyClicked = { isCreateCompanyOpen = true },
                     onSearchClicked = { viewModel.navigateTo(AppRoute.Search()) },
-                    onProfileClicked = { viewModel.navigateTo(AppRoute.Profile) }
+                    onProfileClicked = { viewModel.navigateTo(AppRoute.Profile) },
+                    canGoBack = canGoBack,
+                    onBack = { viewModel.navigateBack() }
                 )
             },
             bottomBar = {
                 if (!isExpanded) {
-                    NavigationBar {
-                        navItems.forEach { item ->
-                            NavigationBarItem(
-                                selected = uiState.selectedTab == item.tab,
-                                onClick = { viewModel.selectTab(item.tab) },
-                                icon = { Icon(item.icon, contentDescription = item.label) },
-                                label = { Text(item.label, maxLines = 1, overflow = TextOverflow.Ellipsis, softWrap = false) },
-                                modifier = Modifier.testTag(item.tag)
-                            )
+                    Column {
+                        // NavigationBar reserves its own bottom system-nav-bar inset (correct,
+                        // needed on gesture-nav devices) - on a 3-button-nav device that reserved
+                        // strip has no visual boundary from the tappable row above it, so the whole
+                        // bottom area reads as one abnormally tall block ("bottom bar too high").
+                        // This divider marks where the actual nav bar ends.
+                        AppDivider()
+                        NavigationBar {
+                            navItems.forEach { item ->
+                                NavigationBarItem(
+                                    selected = uiState.selectedTab == item.tab,
+                                    onClick = { viewModel.selectTab(item.tab) },
+                                    icon = { Icon(item.icon, contentDescription = item.label) },
+                                    label = { Text(item.label, maxLines = 1, overflow = TextOverflow.Ellipsis, softWrap = false) },
+                                    modifier = Modifier.testTag(item.tag)
+                                )
+                            }
                         }
                     }
                 }
@@ -270,7 +284,23 @@ fun MainAppScreen(
                         is AppRoute.Reports -> ReportsCenterScreen(
                             uiState = uiState,
                             onOpenDayBook = { viewModel.navigateTo(AppRoute.DayBook) },
-                            onOpenAllLedgers = { viewModel.navigateTo(AppRoute.ChartOfAccounts) }
+                            onOpenAllLedgers = { viewModel.navigateTo(AppRoute.ChartOfAccounts) },
+                            onExportReport = { reportKey ->
+                                coroutineScope.launch {
+                                    val intent = viewModel.exportReportAndShare(reportKey)
+                                    if (intent != null) context.startActivity(intent)
+                                }
+                            },
+                            onShareReport = { reportKey ->
+                                val text = viewModel.buildReportShareText(reportKey)
+                                if (text != null) {
+                                    val sendIntent = Intent(Intent.ACTION_SEND).apply {
+                                        type = "text/plain"
+                                        putExtra(Intent.EXTRA_TEXT, text)
+                                    }
+                                    context.startActivity(Intent.createChooser(sendIntent, "Share report"))
+                                }
+                            }
                         )
 
                         is AppRoute.SettingsAndSync -> SettingsAndSyncScreen(
@@ -289,7 +319,10 @@ fun MainAppScreen(
                             vouchers = uiState.vouchers,
                             parties = uiState.parties,
                             ledgers = uiState.ledgers,
+                            salesRevenue = uiState.profitAndLoss?.salesRevenue ?: com.example.accounting.core.common.Money.ZERO,
+                            receivables = uiState.receivablesReport?.totalOutstanding ?: (uiState.balanceSheet?.sundryDebtors ?: com.example.accounting.core.common.Money.ZERO),
                             onNewSale = { createVoucherType = VoucherType.SALES; isCreateVoucherOpen = true },
+                            onNewCreditNote = { createVoucherType = VoucherType.CREDIT_NOTE; isCreateVoucherOpen = true },
                             onVoucherClick = { selectedVoucherDetail = it },
                             onAddCustomer = { createPartyRole = PartyRole.CUSTOMER },
                             onPartyClick = { party -> onPartySelected(party, uiState.ledgers, viewModel) }
@@ -438,8 +471,8 @@ fun MainAppScreen(
         CreatePartyDialog(
             role = role,
             onDismiss = { createPartyRole = null },
-            onCreateParty = { displayName, r, entityType, gstin, phone, email, address ->
-                viewModel.createParty(displayName, r, entityType, gstin, phone, email, address)
+            onCreateParty = { displayName, r, entityType, gstin, phone, email, address, stateCode, gstRegistrationStatus ->
+                viewModel.createParty(displayName, r, entityType, gstin, phone, email, address, stateCode, gstRegistrationStatus)
             }
         )
     }

@@ -2,7 +2,6 @@ package com.example.accounting.presentation.components
 
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -16,20 +15,15 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.FilterChip
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -44,7 +38,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -58,18 +51,9 @@ import com.example.accounting.domain.accounting.StandardSystemGroups
 import com.example.accounting.domain.accounting.Voucher
 import com.example.accounting.domain.accounting.VoucherType
 import com.example.accounting.domain.inventory.StockItem
-import com.example.accounting.domain.taxation.gst.GSTRules
 import com.example.accounting.domain.trading.OutstandingInvoice
 import com.example.accounting.presentation.viewmodel.AccountingViewModel
 import java.time.LocalDate
-import java.util.UUID
-
-private data class LineFormState(
-    val key: String = UUID.randomUUID().toString(),
-    val itemId: String = "",
-    val quantityInput: String = "1",
-    val rateInput: String = ""
-)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -379,7 +363,15 @@ fun CreateVoucherDialog(
                     Spacer(modifier = Modifier.height(8.dp))
                     OutlinedTextField(
                         value = referenceNumber, onValueChange = { referenceNumber = it },
-                        label = { Text(if (isNoteFlow) "Note Reference (defaults to original invoice no.)" else "Ref / Cheque / Invoice No. (Optional)") },
+                        label = {
+                            Text(
+                                when {
+                                    isNoteFlow -> "Note Reference (defaults to original invoice no.)"
+                                    isSaleFlow -> "Invoice Number (Optional)"
+                                    else -> "Ref / Cheque / Invoice No. (Optional)"
+                                }
+                            )
+                        },
                         modifier = Modifier.fillMaxWidth()
                     )
                     Spacer(modifier = Modifier.height(8.dp))
@@ -446,14 +438,14 @@ fun CreateVoucherDialog(
                                 isSaleFlow -> onPostSaleInvoice(
                                     partyLedgerId, tradeLedgerId,
                                     lines.filter { it.itemId.isNotBlank() }.map {
-                                        AccountingViewModel.TradingLineForm(it.itemId, it.quantityInput.toDoubleOrNull() ?: 0.0, Money.parse(it.rateInput.ifBlank { "0" }))
+                                        AccountingViewModel.TradingLineForm(it.itemId, it.quantityInput.toDoubleOrNull() ?: 0.0, Money.parse(it.rateInput.ifBlank { "0" }), it.supplyNature)
                                     },
                                     LocalDate.now(), referenceNumber, narration
                                 )
                                 isPurchaseFlow -> onPostPurchaseBill(
                                     partyLedgerId, tradeLedgerId,
                                     lines.filter { it.itemId.isNotBlank() }.map {
-                                        AccountingViewModel.TradingLineForm(it.itemId, it.quantityInput.toDoubleOrNull() ?: 0.0, Money.parse(it.rateInput.ifBlank { "0" }))
+                                        AccountingViewModel.TradingLineForm(it.itemId, it.quantityInput.toDoubleOrNull() ?: 0.0, Money.parse(it.rateInput.ifBlank { "0" }), it.supplyNature)
                                     },
                                     LocalDate.now(), referenceNumber, narration
                                 )
@@ -487,365 +479,5 @@ fun CreateVoucherDialog(
                 }
             }
         }
-    }
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun TradingForm(
-    isSale: Boolean,
-    ledgers: List<Ledger>,
-    stockItems: List<StockItem>,
-    itemsMap: Map<String, StockItem>,
-    companyStateCode: String,
-    partyLedgerId: String,
-    onPartyLedgerChange: (String) -> Unit,
-    tradeLedgerId: String,
-    onTradeLedgerChange: (String) -> Unit,
-    lines: List<LineFormState>,
-    onLinesChange: (List<LineFormState>) -> Unit,
-    isDebtorLedger: (Ledger) -> Boolean,
-    isCreditorLedger: (Ledger) -> Boolean,
-    isSalesLedger: (Ledger) -> Boolean,
-    isPurchaseLedger: (Ledger) -> Boolean,
-    ledgersMap: Map<String, Ledger>,
-    partyDropdownExpanded: Boolean,
-    onPartyDropdownExpandedChange: (Boolean) -> Unit,
-    tradeDropdownExpanded: Boolean,
-    onTradeDropdownExpandedChange: (Boolean) -> Unit
-) {
-    Text(
-        if (isSale) "Sale - Tax Invoice" else "Purchase - Supplier Bill",
-        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-    )
-    Spacer(modifier = Modifier.height(8.dp))
-
-    ExposedDropdownMenuBox(expanded = partyDropdownExpanded, onExpandedChange = onPartyDropdownExpandedChange) {
-        OutlinedTextField(
-            value = ledgersMap[partyLedgerId]?.name ?: if (isSale) "Select Customer" else "Select Supplier",
-            onValueChange = {}, readOnly = true,
-            label = { Text(if (isSale) "Customer" else "Supplier") },
-            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = partyDropdownExpanded) },
-            modifier = Modifier.fillMaxWidth().menuAnchor()
-        )
-        ExposedDropdownMenu(expanded = partyDropdownExpanded, onDismissRequest = { onPartyDropdownExpandedChange(false) }) {
-            ledgers.filter { if (isSale) isDebtorLedger(it) else isCreditorLedger(it) }.forEach { led ->
-                DropdownMenuItem(
-                    text = { Text("${led.name} (${led.groupName})") },
-                    onClick = { onPartyLedgerChange(led.ledgerId); onPartyDropdownExpandedChange(false) }
-                )
-            }
-        }
-    }
-
-    Spacer(modifier = Modifier.height(8.dp))
-
-    ExposedDropdownMenuBox(expanded = tradeDropdownExpanded, onExpandedChange = onTradeDropdownExpandedChange) {
-        OutlinedTextField(
-            value = ledgersMap[tradeLedgerId]?.name ?: if (isSale) "Select Sales Ledger" else "Select Purchase Ledger",
-            onValueChange = {}, readOnly = true,
-            label = { Text(if (isSale) "Sales Account" else "Purchase Account") },
-            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = tradeDropdownExpanded) },
-            modifier = Modifier.fillMaxWidth().menuAnchor()
-        )
-        ExposedDropdownMenu(expanded = tradeDropdownExpanded, onDismissRequest = { onTradeDropdownExpandedChange(false) }) {
-            ledgers.filter { if (isSale) isSalesLedger(it) else isPurchaseLedger(it) }.forEach { led ->
-                DropdownMenuItem(text = { Text(led.name) }, onClick = { onTradeLedgerChange(led.ledgerId); onTradeDropdownExpandedChange(false) })
-            }
-        }
-    }
-
-    Spacer(modifier = Modifier.height(12.dp))
-    Text("Items", style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold))
-    Spacer(modifier = Modifier.height(6.dp))
-
-    if (stockItems.isEmpty()) {
-        Surface(shape = RoundedCornerShape(8.dp), color = MaterialTheme.colorScheme.surfaceVariant, modifier = Modifier.fillMaxWidth()) {
-            Text(
-                "No items yet - add one from Ledgers > Items before billing a Sale/Purchase.",
-                style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(10.dp)
-            )
-        }
-    }
-
-    var runningTaxable = Money.ZERO
-    var runningTax = Money.ZERO
-
-    lines.forEachIndexed { index, line ->
-        val item = itemsMap[line.itemId]
-        val qty = line.quantityInput.toDoubleOrNull() ?: 0.0
-        val rate = Money.parse(line.rateInput.ifBlank { "0" })
-        val lineTaxable = Money.fromPaise((qty * rate.paise).toLong())
-        var itemDropdownExpanded by remember(line.key) { mutableStateOf(false) }
-
-        if (item != null) {
-            val supplyType = GSTRules.determineSupplyType(companyStateCode, ledgersMap[partyLedgerId]?.stateCode ?: "")
-            val breakdown = GSTRules.calculateTax(lineTaxable, item.gstRatePercent, supplyType)
-            runningTaxable += breakdown.taxableAmount
-            runningTax += breakdown.totalTax
-        }
-
-        Card(
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)),
-            shape = RoundedCornerShape(10.dp),
-            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
-        ) {
-            Column(modifier = Modifier.padding(10.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                    ExposedDropdownMenuBox(
-                        expanded = itemDropdownExpanded, onExpandedChange = { itemDropdownExpanded = it },
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        OutlinedTextField(
-                            value = item?.name ?: "Select Item",
-                            onValueChange = {}, readOnly = true,
-                            label = { Text("Item") },
-                            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = itemDropdownExpanded) },
-                            modifier = Modifier.fillMaxWidth().menuAnchor()
-                        )
-                        ExposedDropdownMenu(expanded = itemDropdownExpanded, onDismissRequest = { itemDropdownExpanded = false }) {
-                            stockItems.forEach { candidate ->
-                                DropdownMenuItem(
-                                    text = { Text("${candidate.name} (HSN ${candidate.hsnCode}, ${candidate.gstRatePercent}%)") },
-                                    onClick = {
-                                        val defaultRate = if (isSale) candidate.standardSellingPrice else candidate.standardCost
-                                        onLinesChange(lines.toMutableList().also {
-                                            it[index] = line.copy(itemId = candidate.itemId, rateInput = (defaultRate.paise / 100.0).toString())
-                                        })
-                                        itemDropdownExpanded = false
-                                    }
-                                )
-                            }
-                        }
-                    }
-                    IconButton(onClick = { onLinesChange(lines.filterIndexed { i, _ -> i != index }) }, enabled = lines.size > 1) {
-                        Icon(Icons.Default.Delete, contentDescription = "Remove line")
-                    }
-                }
-                Spacer(modifier = Modifier.height(6.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                    OutlinedTextField(
-                        value = line.quantityInput,
-                        onValueChange = { onLinesChange(lines.toMutableList().also { l -> l[index] = line.copy(quantityInput = it) }) },
-                        label = { Text("Qty${item?.let { " (${it.unit})" } ?: ""}") },
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        modifier = Modifier.weight(1f)
-                    )
-                    OutlinedTextField(
-                        value = line.rateInput,
-                        onValueChange = { onLinesChange(lines.toMutableList().also { l -> l[index] = line.copy(rateInput = it) }) },
-                        label = { Text("Rate") },
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        modifier = Modifier.weight(1f)
-                    )
-                }
-                if (item != null) {
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        "Amount ${lineTaxable.formatPlain()} - GST ${item.gstRatePercent}% - HSN ${item.hsnCode.ifBlank { "-" }}",
-                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-        }
-    }
-
-    TextButton(onClick = { onLinesChange(lines + LineFormState()) }) {
-        Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
-        Spacer(modifier = Modifier.width(4.dp))
-        Text("Add Line")
-    }
-
-    if (runningTaxable.isPositive) {
-        Spacer(modifier = Modifier.height(4.dp))
-        Card(
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)),
-            shape = RoundedCornerShape(10.dp),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Column(modifier = Modifier.padding(12.dp)) {
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text("Taxable Value:", style = MaterialTheme.typography.bodySmall)
-                    Text(runningTaxable.formatPlain(), style = MaterialTheme.typography.bodySmall)
-                }
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text("GST:", style = MaterialTheme.typography.bodySmall)
-                    Text(runningTax.formatPlain(), style = MaterialTheme.typography.bodySmall)
-                }
-                HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text("Total (approx.):", style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold))
-                    Text((runningTaxable + runningTax).formatPlain(), style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary))
-                }
-            }
-        }
-    }
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun NoteForm(
-    isCredit: Boolean,
-    eligibleOriginals: List<Voucher>,
-    originalVoucherId: String,
-    onOriginalVoucherChange: (String) -> Unit,
-    expanded: Boolean,
-    onExpandedChange: (Boolean) -> Unit
-) {
-    Text(
-        if (isCredit) "Credit Note - Sales Return / Adjustment" else "Debit Note - Purchase Return / Adjustment",
-        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-    )
-    Spacer(modifier = Modifier.height(8.dp))
-    Text(
-        "The original ${if (isCredit) "Sale" else "Purchase"} is never modified - this creates a new, linked reversal document.",
-        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant
-    )
-    Spacer(modifier = Modifier.height(8.dp))
-
-    val selected = eligibleOriginals.find { it.voucherId == originalVoucherId }
-    ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = onExpandedChange) {
-        OutlinedTextField(
-            value = selected?.let { "${it.voucherNumber} - ${it.totalAmount.formatPlain()}" } ?: "Select Original ${if (isCredit) "Sale" else "Purchase"}",
-            onValueChange = {}, readOnly = true,
-            label = { Text("Original ${if (isCredit) "Sale Invoice" else "Purchase Bill"}") },
-            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
-            modifier = Modifier.fillMaxWidth().menuAnchor()
-        )
-        ExposedDropdownMenu(expanded = expanded, onDismissRequest = { onExpandedChange(false) }) {
-            if (eligibleOriginals.isEmpty()) {
-                DropdownMenuItem(text = { Text("No eligible ${if (isCredit) "sales" else "purchases"} found") }, onClick = {}, enabled = false)
-            }
-            eligibleOriginals.forEach { v ->
-                DropdownMenuItem(
-                    text = { Text("${v.voucherNumber} - ${v.totalAmount.formatPlain()} (${v.date})") },
-                    onClick = { onOriginalVoucherChange(v.voucherId); onExpandedChange(false) }
-                )
-            }
-        }
-    }
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun SettlementForm(
-    isReceipt: Boolean,
-    eligibleParties: List<Ledger>,
-    partyLedgerId: String,
-    onPartyLedgerChange: (String) -> Unit,
-    expanded: Boolean,
-    onExpandedChange: (Boolean) -> Unit,
-    cashBankLedgers: List<Ledger>,
-    cashBankLedgerId: String,
-    onCashBankLedgerChange: (String) -> Unit,
-    paymentMode: String,
-    onPaymentModeChange: (String) -> Unit,
-    outstandingInvoices: List<OutstandingInvoice>,
-    allocationInputs: Map<String, String>,
-    onAllocationChange: (String, String) -> Unit,
-    amountInput: String,
-    onAmountChange: (String) -> Unit,
-    totalAllocated: Money,
-    unallocatedRemainder: Money
-) {
-    var cashBankDropdownExpanded by remember { mutableStateOf(false) }
-    val ledgersById = remember(eligibleParties, cashBankLedgers) { (eligibleParties + cashBankLedgers).associateBy { it.ledgerId } }
-
-    Text(
-        if (isReceipt) "Receipt - Money from Customer" else "Payment - Money to Supplier",
-        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-    )
-    Spacer(modifier = Modifier.height(8.dp))
-
-    ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = onExpandedChange) {
-        OutlinedTextField(
-            value = ledgersById[partyLedgerId]?.name ?: if (isReceipt) "Select Customer" else "Select Supplier",
-            onValueChange = {}, readOnly = true,
-            label = { Text(if (isReceipt) "Customer" else "Supplier") },
-            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
-            modifier = Modifier.fillMaxWidth().menuAnchor()
-        )
-        ExposedDropdownMenu(expanded = expanded, onDismissRequest = { onExpandedChange(false) }) {
-            eligibleParties.forEach { led ->
-                DropdownMenuItem(text = { Text(led.name) }, onClick = { onPartyLedgerChange(led.ledgerId); onExpandedChange(false) })
-            }
-        }
-    }
-
-    Spacer(modifier = Modifier.height(8.dp))
-
-    if (partyLedgerId.isNotBlank()) {
-        Text("Outstanding Invoices", style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold))
-        Spacer(modifier = Modifier.height(4.dp))
-        if (outstandingInvoices.isEmpty()) {
-            Text("No outstanding invoices - this will be recorded as an advance.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        } else {
-            outstandingInvoices.forEach { inv ->
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(inv.voucherNumber, style = MaterialTheme.typography.bodyMedium)
-                        Text("Outstanding ${inv.outstandingAmount.formatPlain()}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                    OutlinedTextField(
-                        value = allocationInputs[inv.voucherId] ?: "",
-                        onValueChange = { onAllocationChange(inv.voucherId, it) },
-                        placeholder = { Text("0") },
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        modifier = Modifier.width(120.dp)
-                    )
-                }
-            }
-        }
-        Spacer(modifier = Modifier.height(4.dp))
-        TextButton(onClick = { outstandingInvoices.forEach { onAllocationChange(it.voucherId, (it.outstandingAmount.paise / 100.0).toString()) } }) {
-            Text("Allocate Full Outstanding")
-        }
-    }
-
-    Spacer(modifier = Modifier.height(8.dp))
-
-    ExposedDropdownMenuBox(expanded = cashBankDropdownExpanded, onExpandedChange = { cashBankDropdownExpanded = it }) {
-        OutlinedTextField(
-            value = ledgersById[cashBankLedgerId]?.name ?: "Select Cash/Bank Account",
-            onValueChange = {}, readOnly = true,
-            label = { Text("Settlement Account") },
-            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = cashBankDropdownExpanded) },
-            modifier = Modifier.fillMaxWidth().menuAnchor()
-        )
-        ExposedDropdownMenu(expanded = cashBankDropdownExpanded, onDismissRequest = { cashBankDropdownExpanded = false }) {
-            cashBankLedgers.forEach { led ->
-                DropdownMenuItem(text = { Text(led.name) }, onClick = { onCashBankLedgerChange(led.ledgerId); cashBankDropdownExpanded = false })
-            }
-        }
-    }
-
-    Spacer(modifier = Modifier.height(8.dp))
-    Text("Payment Mode", style = MaterialTheme.typography.bodyMedium)
-    Spacer(modifier = Modifier.height(4.dp))
-    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        listOf("CASH", "BANK", "UPI").forEach { mode ->
-            FilterChip(selected = paymentMode == mode, onClick = { onPaymentModeChange(mode) }, label = { Text(mode) })
-        }
-    }
-
-    Spacer(modifier = Modifier.height(8.dp))
-    OutlinedTextField(
-        value = amountInput, onValueChange = onAmountChange,
-        label = { Text(if (isReceipt) "Amount Received" else "Amount Paid") },
-        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-        modifier = Modifier.fillMaxWidth().testTag("voucher_amount_input")
-    )
-
-    if (totalAllocated.isPositive || Money.parse(amountInput).isPositive) {
-        Spacer(modifier = Modifier.height(4.dp))
-        Text(
-            "Allocated ${totalAllocated.formatPlain()} - ${if (unallocatedRemainder.paise < 0) "Exceeds amount by ${unallocatedRemainder.abs().formatPlain()}" else "Unallocated (Advance) ${unallocatedRemainder.formatPlain()}"}",
-            style = MaterialTheme.typography.bodySmall,
-            color = if (unallocatedRemainder.paise < 0) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
-        )
     }
 }

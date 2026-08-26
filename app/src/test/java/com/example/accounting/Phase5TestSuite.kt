@@ -15,6 +15,7 @@ import com.example.accounting.data.local.entity.GstFilingPeriodEntity
 import com.example.accounting.data.local.entity.GstTransactionEntity
 import com.example.accounting.data.local.entity.JournalItemEntity
 import com.example.accounting.data.local.entity.LedgerEntity
+import com.example.accounting.data.local.entity.PartyEntity
 import com.example.accounting.data.local.entity.SettlementAllocationEntity
 import com.example.accounting.data.local.entity.StockItemEntity
 import com.example.accounting.data.local.entity.VoucherEntity
@@ -30,6 +31,10 @@ import com.example.accounting.domain.company.BusinessType
 import com.example.accounting.domain.financialyear.PeriodStatus
 import com.example.accounting.domain.inventory.StockDirection
 import com.example.accounting.domain.inventory.VoucherStockLine
+import com.example.accounting.domain.party.Party
+import com.example.accounting.domain.party.PartyEntityType
+import com.example.accounting.domain.party.PartyRole
+import com.example.accounting.domain.party.PartyValidation
 import com.example.accounting.domain.taxation.gst.GstCalculationEngine
 import com.example.accounting.domain.taxation.gst.GstDirection
 import com.example.accounting.domain.taxation.gst.GstLedgerIds
@@ -74,6 +79,10 @@ class Phase5TestSuite {
         private val gstTransactions = mutableListOf<GstTransactionEntity>()
         private val allocations = mutableListOf<SettlementAllocationEntity>()
         private val filingPeriods = LinkedHashMap<String, GstFilingPeriodEntity>()
+        // Rule 30 (Party/Customer/Supplier Data Validation) - [FakeAccountingDao] stubs every
+        // Party method as a no-op/empty-return, harmless where no prior Phase exercised Party
+        // creation but not here - same rationale as gstTransactions/allocations/filingPeriods above.
+        private val parties = LinkedHashMap<String, PartyEntity>()
 
         override suspend fun getGstTransactionsForVoucher(voucherId: String) = gstTransactions.filter { it.voucherId == voucherId }
         override suspend fun getGstTransactionsForCompanyFY(companyId: String, fyId: String) =
@@ -89,6 +98,13 @@ class Phase5TestSuite {
         override suspend fun setGstFilingPeriodLock(companyId: String, filingPeriodId: String, isLocked: Boolean, lockedAt: Long?, lockedBy: String?) {
             filingPeriods[filingPeriodId]?.let { filingPeriods[filingPeriodId] = it.copy(isLocked = isLocked, lockedAt = lockedAt, lockedBy = lockedBy) }
         }
+
+        override fun getPartiesByCompany(companyId: String) = flowOf(parties.values.filter { it.companyId == companyId })
+        override fun getPartiesByRole(companyId: String, role: PartyRole) = flowOf(parties.values.filter { it.companyId == companyId && it.role == role })
+        override suspend fun getPartyById(companyId: String, partyId: String) = parties.values.firstOrNull { it.companyId == companyId && it.partyId == partyId }
+        override suspend fun getPartyByLedgerId(companyId: String, ledgerId: String) = parties.values.firstOrNull { it.companyId == companyId && it.ledgerId == ledgerId }
+        override suspend fun insertParty(party: PartyEntity) { parties[party.partyId] = party }
+        override suspend fun updateParty(party: PartyEntity) { parties[party.partyId] = party }
     }
 
     private val companyId = "COMP_P5"
@@ -273,6 +289,138 @@ class Phase5TestSuite {
             roundOffLedgerId = "LED_RO", roundOffLedgerName = "Round Off"
         )
         assertTrue(result.gstTransactions.all { it.direction == GstDirection.INPUT })
+    }
+
+    /**
+     * UI-06: per-line Tax Treatment (previously every line was always NORMAL, so intra/inter-state
+     * geography resolution never varied within one invoice). Once a line can be EXEMPT/NIL_RATED/
+     * EXPORT, [TradingWorkflowEngine.build] must not let that line's zero-tax [SupplyType] win the
+     * ONE invoice-level decision of whether to post CGST+SGST or IGST for the OTHER, taxable lines -
+     * otherwise a trailing exempt line would silently drop the tax lines a preceding taxable line
+     * already accumulated, leaving the party's debit (which includes that tax) unmatched by any
+     * credit and producing an unbalanced voucher.
+     */
+    @Test
+    fun a9b_TradingWorkflow_TrailingExemptLine_DoesNotSuppressEarlierLineTax() {
+        val taxableLine = line("ITEM_A", 1, 1000_00L, 18.0)
+        val exemptLine = line("ITEM_B", 1, 500_00L, 0.0).copy(supplyNature = GstSupplyNature.EXEMPT)
+        val result = TradingWorkflowEngine.buildSale(
+            voucherId = "V1", companyId = companyId, financialYearId = fyId,
+            customerLedgerId = "LED_DEBTOR", customerName = "Cust", customerGstin = "",
+            salesLedgerId = "LED_SALES", salesLedgerName = "Sales", companyStateCode = "27", placeOfSupply = "27",
+            lines = listOf(taxableLine, exemptLine), gstLedgers = gstLedgerRefs(companyId),
+            roundOffLedgerId = "LED_RO", roundOffLedgerName = "Round Off"
+        )
+        // ITEM_A: taxable 1000.00 @ 18% intra-state = 90.00 CGST + 90.00 SGST. ITEM_B contributes
+        // zero tax (EXEMPT) but must not erase ITEM_A's already-accumulated CGST/SGST lines.
+        val taxLines = result.journalItems.filter { it.ledgerId.startsWith("LED_GST") }
+        val totalTax = taxLines.fold(Money.ZERO) { acc, i -> acc + i.amount }
+        assertEquals(180_00L, totalTax.paise)
+        assertTrue("Expected an Output CGST journal line", taxLines.any { it.ledgerId.contains("CGST") })
+        assertTrue("Expected an Output SGST journal line", taxLines.any { it.ledgerId.contains("SGST") })
+        val totalDebits = result.journalItems.filter { it.type == DrCr.DEBIT }.fold(Money.ZERO) { acc, i -> acc + i.amount }
+        val totalCredits = result.journalItems.filter { it.type == DrCr.CREDIT }.fold(Money.ZERO) { acc, i -> acc + i.amount }
+        assertEquals("Voucher must remain balanced", totalDebits.paise, totalCredits.paise)
+    }
+
+    // ==========================================
+    // A2. GST-ONLY PATH (Architecture Checkpoint follow-up, Option B continuation) - pure domain
+    // math for TradingWorkflowEngine.buildGstOnlySale, no Room/Repository involved. Proves the
+    // SAME GstCalculationEngine call TradingWorkflowEngine.build() uses, never a second calculator,
+    // and that every returned row's voucherId is null (there is no voucherId parameter to this
+    // function at all - it cannot accidentally be supplied a real one).
+    // ==========================================
+
+    @Test
+    fun a11_GstOnlySale_VoucherIdAlwaysNull_AndExplicitlyClassifiedAsSales() {
+        val result = TradingWorkflowEngine.buildGstOnlySale(
+            companyId = companyId, financialYearId = fyId,
+            customerLedgerId = "LED_DEBTOR", customerGstin = "27AAAAA0000A1Z5",
+            companyStateCode = "27", placeOfSupply = "27",
+            lines = listOf(line("ITEM_A", 1, 1000_00L, 18.0))
+        )
+        assertEquals(1, result.size)
+        assertNull(result.first().voucherId)
+        // Transaction/Contract Hardening: the classification is a real, explicit VoucherType set
+        // directly by buildGstOnlySale - never something a reader has to infer from `direction`.
+        assertEquals(VoucherType.SALES, result.first().voucherType)
+    }
+
+    @Test
+    fun a12_GstOnlySale_IntraState_SplitsCgstSgst_MatchesAccountingPathMath() {
+        // Same inputs a1/a7 already exercise through buildSale - proves the GST-only path computes
+        // byte-identical tax figures to the accounting path, since both call the same engine.
+        val result = TradingWorkflowEngine.buildGstOnlySale(
+            companyId = companyId, financialYearId = fyId,
+            customerLedgerId = "LED_DEBTOR", customerGstin = "27AAAAA0000A1Z5",
+            companyStateCode = "27", placeOfSupply = "27",
+            lines = listOf(line("ITEM_A", 10, 100_00L, gstRate = 5.0), line("ITEM_B", 5, 200_00L, gstRate = 28.0))
+        )
+        val totalTax = result.fold(Money.ZERO) { acc, gt -> acc + gt.cgst + gt.sgst + gt.igst }
+        assertEquals(330_00L, totalTax.paise)
+        assertTrue(result.all { it.igst == Money.ZERO })
+        assertTrue(result.all { it.direction == GstDirection.OUTPUT })
+    }
+
+    @Test
+    fun a13_GstOnlySale_InterState_UsesIgstOnly() {
+        val result = TradingWorkflowEngine.buildGstOnlySale(
+            companyId = companyId, financialYearId = fyId,
+            customerLedgerId = "LED_DEBTOR", customerGstin = "29AAAAA0000A1Z5",
+            companyStateCode = "27", placeOfSupply = "29",
+            lines = listOf(line("ITEM_A", 1, 1000_00L, 18.0))
+        )
+        val gt = result.first()
+        assertEquals(180_00L, gt.igst.paise)
+        assertEquals(Money.ZERO, gt.cgst)
+        assertEquals(Money.ZERO, gt.sgst)
+        assertEquals(SupplyType.INTER_STATE, gt.supplyType)
+    }
+
+    @Test
+    fun a14_GstOnlySale_TaxTreatments_NilRatedExemptZeroRated_ProduceZeroTax() {
+        val lines = listOf(
+            line("ITEM_TAXABLE", 1, 1000_00L, 18.0),
+            line("ITEM_NIL", 1, 500_00L, 18.0).copy(supplyNature = GstSupplyNature.NIL_RATED),
+            line("ITEM_EXEMPT", 1, 500_00L, 18.0).copy(supplyNature = GstSupplyNature.EXEMPT),
+            line("ITEM_EXPORT", 1, 500_00L, 18.0).copy(supplyNature = GstSupplyNature.EXPORT)
+        )
+        val result = TradingWorkflowEngine.buildGstOnlySale(
+            companyId = companyId, financialYearId = fyId,
+            customerLedgerId = "LED_DEBTOR", customerGstin = "27AAAAA0000A1Z5",
+            companyStateCode = "27", placeOfSupply = "27", lines = lines
+        )
+        assertEquals(4, result.size)
+        val taxable = result.first { it.itemId == "ITEM_TAXABLE" }
+        assertEquals(90_00L, taxable.cgst.paise)
+        assertEquals(90_00L, taxable.sgst.paise)
+        listOf("ITEM_NIL", "ITEM_EXEMPT", "ITEM_EXPORT").forEach { id ->
+            val gt = result.first { it.itemId == id }
+            assertEquals("$id must carry zero CGST", Money.ZERO, gt.cgst)
+            assertEquals("$id must carry zero SGST", Money.ZERO, gt.sgst)
+            assertEquals("$id must carry zero IGST", Money.ZERO, gt.igst)
+            // Taxable value itself is still recorded (a Nil Rated/Exempt/Zero Rated supply still
+            // has a real taxable value for GST reporting purposes - only the tax computed on it is
+            // zero, per GstCalculationEngine's own existing, unmodified behavior).
+            assertEquals(500_00L, gt.taxableAmount.paise)
+        }
+        assertEquals(SupplyType.EXPORT, result.first { it.itemId == "ITEM_EXPORT" }.supplyType)
+        assertEquals(SupplyType.EXEMPT, result.first { it.itemId == "ITEM_EXEMPT" }.supplyType)
+    }
+
+    @Test
+    fun a15_GstOnlySale_PlaceOfSupplyAndHsn_ArePreserved() {
+        val result = TradingWorkflowEngine.buildGstOnlySale(
+            companyId = companyId, financialYearId = fyId,
+            customerLedgerId = "LED_DEBTOR", customerGstin = "29AAAAA0000A1Z5",
+            companyStateCode = "27", placeOfSupply = "29",
+            lines = listOf(line("ITEM_A", 1, 1000_00L, 18.0, hsn = "998313"))
+        )
+        val gt = result.first()
+        assertEquals("29", gt.placeOfSupply)
+        assertEquals("998313", gt.hsnSacCode)
+        assertEquals("29AAAAA0000A1Z5", gt.partyGstin)
+        assertEquals("LED_DEBTOR", gt.partyLedgerId)
     }
 
     @Test
@@ -833,5 +981,162 @@ class Phase5TestSuite {
         repo.createGstFilingPeriod("COMP_A", "2026-04", "2026-04-01", "2026-04-30")
         val periodsB = repo.getGstFilingPeriods("COMP_B").first()
         assertTrue(periodsB.isEmpty())
+    }
+
+    // ==========================================
+    // G. PARTY / CUSTOMER / SUPPLIER DATA VALIDATION (Rule 30)
+    // ==========================================
+
+    @Test
+    fun g1_PartyValidation_Individual_BlankGstin_Allowed() {
+        val error = PartyValidation.validateGstFacts(PartyEntityType.INDIVIDUAL, null, "")
+        assertNull("Individual with blank GSTIN must be allowed", error)
+    }
+
+    @Test
+    fun g2_PartyValidation_Business_Registered_ValidGstin_Allowed() {
+        val error = PartyValidation.validateGstFacts(
+            PartyEntityType.BUSINESS, com.example.accounting.domain.accounting.GstRegistrationStatus.REGISTERED, "27AAAAA0000A1Z5"
+        )
+        assertNull("Business + REGISTERED + valid GSTIN must be allowed", error)
+    }
+
+    @Test
+    fun g3_PartyValidation_Business_Registered_BlankGstin_Rejected() {
+        val error = PartyValidation.validateGstFacts(
+            PartyEntityType.BUSINESS, com.example.accounting.domain.accounting.GstRegistrationStatus.REGISTERED, ""
+        )
+        assertNotNull("Business + REGISTERED + blank GSTIN must be rejected", error)
+    }
+
+    @Test
+    fun g4_PartyValidation_Business_Registered_InvalidGstin_Rejected() {
+        val error = PartyValidation.validateGstFacts(
+            PartyEntityType.BUSINESS, com.example.accounting.domain.accounting.GstRegistrationStatus.REGISTERED, "NOT-A-VALID-GSTIN"
+        )
+        assertNotNull("Business + REGISTERED + invalid GSTIN must be rejected", error)
+    }
+
+    @Test
+    fun g5_PartyValidation_Business_Unregistered_BlankGstin_Allowed() {
+        val error = PartyValidation.validateGstFacts(
+            PartyEntityType.BUSINESS, com.example.accounting.domain.accounting.GstRegistrationStatus.UNREGISTERED, ""
+        )
+        assertNull("Business + UNREGISTERED + blank GSTIN must be allowed", error)
+    }
+
+    @Test
+    fun g6_PartyValidation_UnknownStatus_NeverTreatedAsRegisteredOrUnregistered() = runBlocking {
+        // Pure logic: UNKNOWN (null) must never be rejected the way REGISTERED-with-blank-GSTIN is.
+        val error = PartyValidation.validateGstFacts(PartyEntityType.BUSINESS, null, "")
+        assertNull("An UNKNOWN registration status must never be silently treated as REGISTERED", error)
+
+        // Persistence: a Party created with no explicit registration status must read back as
+        // exactly null (UNKNOWN) - never defaulted to UNREGISTERED.
+        val dao = freshDao()
+        dao.seedCompany()
+        val repo = AccountingRepository(dao)
+        val result = repo.createParty(
+            Party(partyId = "", companyId = companyId, ledgerId = "", role = PartyRole.CUSTOMER, entityType = PartyEntityType.BUSINESS, displayName = "Unknown GST Co"),
+            com.example.accounting.domain.accounting.Ledger(ledgerId = "", companyId = companyId, groupId = "", name = "Unknown GST Co")
+        )
+        assertTrue(result is com.example.accounting.core.common.AccountingResult.Success)
+        val ledgerId = (result as com.example.accounting.core.common.AccountingResult.Success).data.ledgerId
+        val persisted = dao.getLedgerById(companyId, ledgerId)!!
+        assertNull("gstRegistrationStatus must remain null (UNKNOWN), never guessed", persisted.gstRegistrationStatus)
+    }
+
+    @Test
+    fun g7_PartyCreation_MissingState_IsNotReplacedWithCompanyState() = runBlocking {
+        val dao = freshDao()
+        dao.seedCompany() // company stateCode = "27"
+        val repo = AccountingRepository(dao)
+        val result = repo.createParty(
+            Party(partyId = "", companyId = companyId, ledgerId = "", role = PartyRole.CUSTOMER, entityType = PartyEntityType.BUSINESS, displayName = "No State Co"),
+            com.example.accounting.domain.accounting.Ledger(ledgerId = "", companyId = companyId, groupId = "", name = "No State Co", stateCode = "")
+        )
+        assertTrue(result is com.example.accounting.core.common.AccountingResult.Success)
+        val ledgerId = (result as com.example.accounting.core.common.AccountingResult.Success).data.ledgerId
+        val persisted = dao.getLedgerById(companyId, ledgerId)!!
+        assertEquals("A Party's missing State must stay blank, never silently become the company's own state", "", persisted.stateCode)
+    }
+
+    @Test
+    fun g8_PartyCreation_ExistingDataRemainsCompatible() = runBlocking {
+        val dao = freshDao()
+        dao.seedCompany()
+        // Simulate a pre-migration Ledger row that predates gstRegistrationStatus/stateCode being
+        // collected at all (a real "existing data" scenario, not a fabricated new field value).
+        dao.insertLedger(
+            LedgerEntity(
+                "LED_LEGACY", companyId, "${StandardSystemGroups.DEBTORS_GROUP_ID}_$companyId", "Legacy Customer", "",
+                0L, DrCr.DEBIT, 0L, DrCr.DEBIT, "", "", "", "", "", "", "", "", false, true, "", 0.0
+            )
+        )
+        val repo = AccountingRepository(dao)
+        val ledgers = repo.getLedgers(companyId).first()
+        val legacy = ledgers.first { it.ledgerId == "LED_LEGACY" }
+        assertNull("Pre-existing data with no recorded GST registration status must remain UNKNOWN, not mutated", legacy.gstRegistrationStatus)
+        assertEquals("", legacy.stateCode)
+        assertEquals("", legacy.gstin)
+    }
+
+    @Test
+    fun g9_PartyCreation_DoesNotCreateVoucher() = runBlocking {
+        val dao = freshDao()
+        dao.seedCompany()
+        val repo = AccountingRepository(dao)
+        repo.createParty(
+            Party(partyId = "", companyId = companyId, ledgerId = "", role = PartyRole.CUSTOMER, entityType = PartyEntityType.INDIVIDUAL, displayName = "Walk-in Customer"),
+            com.example.accounting.domain.accounting.Ledger(ledgerId = "", companyId = companyId, groupId = "", name = "Walk-in Customer")
+        )
+        assertTrue("Party creation must never post a Voucher", dao.getAllVouchersByCompany(companyId).first().isEmpty())
+    }
+
+    @Test
+    fun g10_PartyCreation_DoesNotCreateJournalItem() = runBlocking {
+        val dao = freshDao()
+        dao.seedCompany()
+        val repo = AccountingRepository(dao)
+        repo.createParty(
+            Party(partyId = "", companyId = companyId, ledgerId = "", role = PartyRole.SUPPLIER, entityType = PartyEntityType.INDIVIDUAL, displayName = "Walk-in Supplier"),
+            com.example.accounting.domain.accounting.Ledger(ledgerId = "", companyId = companyId, groupId = "", name = "Walk-in Supplier")
+        )
+        assertTrue("Party creation must never create a JournalItem", dao.getAllJournalItems(companyId, fyId).first().isEmpty())
+    }
+
+    @Test
+    fun g11_PartyCreation_DoesNotChangeAnyLedgerBalance() = runBlocking {
+        val dao = freshDao()
+        dao.seedCompany()
+        dao.seedTradingLedgers()
+        val before = dao.getLedgersByCompany(companyId).first().associate { it.ledgerId to it.currentBalancePaise }
+        val repo = AccountingRepository(dao)
+        val result = repo.createParty(
+            Party(partyId = "", companyId = companyId, ledgerId = "", role = PartyRole.CUSTOMER, entityType = PartyEntityType.BUSINESS, displayName = "New Customer"),
+            com.example.accounting.domain.accounting.Ledger(ledgerId = "", companyId = companyId, groupId = "", name = "New Customer")
+        )
+        assertTrue(result is com.example.accounting.core.common.AccountingResult.Success)
+        val newLedgerId = (result as com.example.accounting.core.common.AccountingResult.Success).data.ledgerId
+
+        val after = dao.getLedgersByCompany(companyId).first().associate { it.ledgerId to it.currentBalancePaise }
+        before.forEach { (ledgerId, balance) -> assertEquals("Existing ledger '$ledgerId' balance must be unchanged by Party creation", balance, after[ledgerId]) }
+        assertEquals("A freshly created Party's ledger must open at zero balance", 0L, after[newLedgerId])
+    }
+
+    @Test
+    fun g12_PartyCreation_CompanyBoundaryIsEnforced() = runBlocking {
+        val dao = freshDao()
+        dao.seedCompany(company = "COMP_PARTY_A", financialYearId = "FY_PARTY_A")
+        dao.seedCompany(company = "COMP_PARTY_B", financialYearId = "FY_PARTY_B")
+        val repo = AccountingRepository(dao)
+        repo.createParty(
+            Party(partyId = "", companyId = "COMP_PARTY_A", ledgerId = "", role = PartyRole.CUSTOMER, entityType = PartyEntityType.BUSINESS, displayName = "A's Customer"),
+            com.example.accounting.domain.accounting.Ledger(ledgerId = "", companyId = "COMP_PARTY_A", groupId = "", name = "A's Customer")
+        )
+        val partiesInB = repo.getParties("COMP_PARTY_B").first()
+        assertTrue("A Party created under Company A must never be visible under Company B", partiesInB.isEmpty())
+        val ledgersInB = repo.getLedgers("COMP_PARTY_B").first()
+        assertTrue("Company A's new Party ledger must never leak into Company B's ledgers", ledgersInB.none { it.name == "A's Customer" })
     }
 }

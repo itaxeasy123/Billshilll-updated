@@ -83,7 +83,7 @@ import com.example.accounting.data.local.entity.VoucherStockLineEntity
         CompanySubscriptionEntity::class,
         BankUpiProfileEntity::class
     ],
-    version = 10,
+    version = 12,
     exportSchema = false
 )
 @TypeConverters(RoomConverters::class)
@@ -777,6 +777,87 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
-        val ALL_MIGRATIONS: Array<Migration> = arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10)
+        /**
+         * Migration 10 -> 11 (Architecture Checkpoint: GST must be able to exist independently of
+         * accounting). The only change is `gst_transactions.voucherId` NOT NULL -> nullable, so a
+         * GST-only company's transaction can be persisted with no [VoucherEntity] at all - a NULL
+         * child key is never checked against a SQLite FOREIGN KEY, so every existing row (always a
+         * real voucherId) is completely unaffected; only a future genuinely voucher-less row can
+         * use NULL. SQLite has no `ALTER COLUMN`, so this uses the standard rebuild procedure
+         * (create new table with the relaxed constraint, copy every existing row unchanged, drop
+         * the old table, rename, recreate every index) - `gst_transactions` is a leaf table (no
+         * other table has a foreign key pointing to it), so nothing else is affected by the rebuild.
+         * No data is deleted, dropped, or reinterpreted - satisfies Invariant 21 (no destructive
+         * fallback migration). This is a schema-capability change only: nothing in this pass yet
+         * writes a NULL voucherId - `VoucherPostingEngine`/`TradingWorkflowEngine`/every existing
+         * caller is untouched and keeps supplying a real voucherId exactly as before.
+         */
+        val MIGRATION_10_11 = object : Migration(10, 11) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("PRAGMA foreign_keys=OFF")
+                db.execSQL(
+                    """
+                    CREATE TABLE gst_transactions_new (
+                        gstTransactionId TEXT NOT NULL PRIMARY KEY,
+                        companyId TEXT NOT NULL,
+                        financialYearId TEXT NOT NULL,
+                        voucherId TEXT,
+                        voucherType TEXT NOT NULL,
+                        partyLedgerId TEXT NOT NULL,
+                        partyGstin TEXT NOT NULL,
+                        placeOfSupply TEXT NOT NULL,
+                        supplyType TEXT NOT NULL,
+                        itemId TEXT,
+                        hsnSacCode TEXT NOT NULL,
+                        quantityRaw INTEGER,
+                        taxableAmountPaise INTEGER NOT NULL,
+                        gstRatePercent REAL NOT NULL,
+                        cgstPaise INTEGER NOT NULL,
+                        sgstPaise INTEGER NOT NULL,
+                        igstPaise INTEGER NOT NULL,
+                        cessPaise INTEGER NOT NULL,
+                        direction TEXT NOT NULL,
+                        lineOrder INTEGER NOT NULL,
+                        createdAt INTEGER NOT NULL,
+                        FOREIGN KEY(voucherId) REFERENCES vouchers(voucherId) ON DELETE CASCADE
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    INSERT INTO gst_transactions_new
+                    SELECT gstTransactionId, companyId, financialYearId, voucherId, voucherType,
+                           partyLedgerId, partyGstin, placeOfSupply, supplyType, itemId, hsnSacCode,
+                           quantityRaw, taxableAmountPaise, gstRatePercent, cgstPaise, sgstPaise,
+                           igstPaise, cessPaise, direction, lineOrder, createdAt
+                    FROM gst_transactions
+                    """.trimIndent()
+                )
+                db.execSQL("DROP TABLE gst_transactions")
+                db.execSQL("ALTER TABLE gst_transactions_new RENAME TO gst_transactions")
+
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_gst_transactions_companyId ON gst_transactions(companyId)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_gst_transactions_financialYearId ON gst_transactions(financialYearId)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_gst_transactions_voucherId ON gst_transactions(voucherId)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_gst_transactions_partyLedgerId ON gst_transactions(partyLedgerId)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_gst_transactions_direction ON gst_transactions(direction)")
+                db.execSQL("PRAGMA foreign_keys=ON")
+            }
+        }
+
+        /**
+         * Rule 30 (Party/Customer/Supplier Data Validation) - adds the storage column for
+         * [com.example.accounting.domain.accounting.Ledger.gstRegistrationStatus], which existed
+         * on the domain model with nowhere to persist to before this. A plain nullable column add
+         * (no FK/constraint involved) - no table rebuild needed, unlike [MIGRATION_10_11]. Every
+         * existing row reads back NULL (UNKNOWN) - never guessed as REGISTERED/UNREGISTERED.
+         */
+        val MIGRATION_11_12 = object : Migration(11, 12) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE ledgers ADD COLUMN gstRegistrationStatus TEXT")
+            }
+        }
+
+        val ALL_MIGRATIONS: Array<Migration> = arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12)
     }
 }

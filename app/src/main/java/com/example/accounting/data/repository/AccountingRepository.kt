@@ -61,6 +61,7 @@ import com.example.accounting.domain.party.PaymentTerms
 import com.example.accounting.domain.sync.SyncAggregateType
 import com.example.accounting.domain.sync.SyncEvent
 import com.example.accounting.domain.sync.SyncEventSerializer
+import com.example.accounting.domain.sync.SyncGstTransactionDto
 import com.example.accounting.domain.sync.SyncInvoiceDto
 import com.example.accounting.domain.sync.SyncInvoiceLineDto
 import com.example.accounting.domain.sync.SyncLedgerDto
@@ -76,6 +77,7 @@ import com.example.accounting.domain.accounting.AccountGroup
 import com.example.accounting.domain.accounting.Branch
 import com.example.accounting.domain.accounting.DoubleEntryValidator
 import com.example.accounting.domain.accounting.JournalItem
+import com.example.accounting.domain.accounting.GstRegistrationStatus
 import com.example.accounting.domain.accounting.Ledger
 import com.example.accounting.domain.accounting.PrimaryGroup
 import com.example.accounting.domain.accounting.StandardSystemGroups
@@ -188,21 +190,20 @@ class AccountingRepository(
     }
 
     // ==================== INITIALIZATION & SEEDING ====================
-    suspend fun initializeDatabaseIfNeeded() {
-        val defaultCompany = dao.getDefaultCompany()
-        if (defaultCompany == null) {
-            seedDefaultCompanyAndCoA()
-        }
-    }
-
-    private suspend fun seedDefaultCompanyAndCoA() {
-        seedInitialDataForCompany("COMP_APEX_01", "Apex Industrial Technologies Ltd.", "27AAACA1234F1ZQ")
-    }
-
+    /**
+     * Seeds the standard Chart of Accounts (financial years, accounting periods, system groups,
+     * starter Cash/Bank/Capital/Sales ledgers, GST duty ledgers) for a real, user-created company -
+     * every real company needs this scaffolding, the same way Tally/QuickBooks auto-provision a
+     * standard CoA for a brand-new company file. [companyName]/[gstin] must be the caller's real
+     * data; this function has no default company of its own to fall back to (removed - a
+     * production app must never auto-create a fake company at startup just because none exists
+     * yet; a genuinely empty company list is the correct, already-supported first-launch state -
+     * `AppTopBar` already renders "Select Company" for a null [com.example.accounting.domain.company.Company]).
+     */
     suspend fun seedInitialDataForCompany(
         companyId: String,
-        companyName: String = "Apex Industrial Technologies Ltd.",
-        gstin: String = "27AAACA1234F1ZQ"
+        companyName: String,
+        gstin: String
     ) {
         val company = CompanyEntity(
             companyId = companyId,
@@ -1134,6 +1135,7 @@ class AccountingRepository(
                 gstin = it.gstin,
                 pan = it.pan,
                 stateCode = it.stateCode,
+                gstRegistrationStatus = it.gstRegistrationStatus?.let { raw -> runCatching { GstRegistrationStatus.valueOf(raw) }.getOrNull() },
                 email = it.email,
                 phone = it.phone,
                 address = it.address,
@@ -1173,6 +1175,7 @@ class AccountingRepository(
             gstin = ledger.gstin,
             pan = ledger.pan,
             stateCode = ledger.stateCode,
+            gstRegistrationStatus = ledger.gstRegistrationStatus?.name,
             email = ledger.email,
             phone = ledger.phone,
             address = ledger.address,
@@ -1218,6 +1221,7 @@ class AccountingRepository(
             gstin = ledger.gstin,
             pan = ledger.pan,
             stateCode = ledger.stateCode,
+            gstRegistrationStatus = ledger.gstRegistrationStatus?.name,
             email = ledger.email,
             phone = ledger.phone,
             address = ledger.address,
@@ -1570,6 +1574,106 @@ class AccountingRepository(
         val result = dbTransaction.postVoucherAtomic(voucherEntity, itemEntities, idempotencyKey, voucher.createdBy, stockLineEntities, gstTransactionEntities)
         return if (result.isSuccess) {
             AccountingResult.Success(voucher)
+        } else {
+            AccountingResult.Failure(mapTransactionFailure(result.exceptionOrNull()))
+        }
+    }
+
+    /**
+     * GST-only Sale (Architecture Checkpoint follow-up, Option B continuation) - the smallest
+     * repository capability that can persist a real [GstTransaction] with NO accounting [Voucher]
+     * at all, for a company that does not maintain accounting. Mirrors [postVoucher]'s own
+     * shape (resolve inputs -> validate company/FY/ledger -> delegate to the domain engine ->
+     * persist atomically -> map the result) rather than inventing a different one.
+     *
+     * Deliberately does NOT call [postVoucher]/[com.example.accounting.core.database.VoucherPostingEngine] -
+     * there is no [Voucher] to build. [com.example.accounting.domain.trading.TradingWorkflowEngine.buildGstOnlySale]
+     * (the one, same GST engine every accounting-enabled Sale already uses) computes the GST facts;
+     * this function only resolves company/FY/customer-ledger and persists the result. No UI calls
+     * this yet (out of scope for this pass) - a future ViewModel entry point would call this
+     * exactly the way `postSaleInvoice` calls [postVoucher] today.
+     */
+    suspend fun postGstOnlySale(
+        companyId: String,
+        financialYearId: String,
+        customerLedgerId: String,
+        lines: List<com.example.accounting.domain.trading.TradingLineInput>,
+        idempotencyKey: String = UUID.randomUUID().toString()
+    ): AccountingResult<List<GstTransaction>> {
+        val company = dao.getCompanyById(companyId)
+            ?: return AccountingResult.Failure(AppError.ResourceNotFound("Company", companyId))
+        val fy = dao.getFinancialYearById(financialYearId)
+            ?: return AccountingResult.Failure(AppError.ResourceNotFound("FinancialYear", financialYearId))
+        if (fy.companyId != companyId) {
+            return AccountingResult.Failure(AppError.ValidationError("Financial year '$financialYearId' does not belong to company '$companyId'."))
+        }
+        val customerLedger = dao.getLedgerById(companyId, customerLedgerId)
+            ?: return AccountingResult.Failure(AppError.ResourceNotFound("Ledger", customerLedgerId))
+        if (lines.isEmpty()) {
+            return AccountingResult.Failure(AppError.ValidationError("At least one item line is required."))
+        }
+        if (dbTransaction == null) {
+            return AccountingResult.Failure(AppError.SystemError("Database transaction unavailable: cannot post GST transaction atomically."))
+        }
+
+        // Place of Supply (Rule 29): never defaulted to the company's own state - that would
+        // silently force INTRA_STATE regardless of the customer's actual location. If the ledger
+        // has no state on file, surface it instead of guessing.
+        if (customerLedger.stateCode.isBlank()) {
+            return AccountingResult.Failure(
+                AppError.ValidationError("Set a State for customer '${customerLedger.name}' before posting - Place of Supply cannot be determined.")
+            )
+        }
+        val placeOfSupply = customerLedger.stateCode
+        val gstTransactions = com.example.accounting.domain.trading.TradingWorkflowEngine.buildGstOnlySale(
+            companyId = companyId, financialYearId = financialYearId,
+            customerLedgerId = customerLedgerId, customerGstin = customerLedger.gstin,
+            companyStateCode = company.stateCode, placeOfSupply = placeOfSupply, lines = lines
+        )
+
+        val entities = gstTransactions.map { gt ->
+            GstTransactionEntity(
+                gstTransactionId = gt.gstTransactionId, companyId = gt.companyId, financialYearId = gt.financialYearId,
+                voucherId = null, voucherType = gt.voucherType, partyLedgerId = gt.partyLedgerId,
+                partyGstin = gt.partyGstin, placeOfSupply = gt.placeOfSupply, supplyType = gt.supplyType,
+                itemId = gt.itemId, hsnSacCode = gt.hsnSacCode, quantityRaw = gt.quantity?.rawValue,
+                taxableAmountPaise = gt.taxableAmount.paise, gstRatePercent = gt.gstRatePercent,
+                cgstPaise = gt.cgst.paise, sgstPaise = gt.sgst.paise, igstPaise = gt.igst.paise, cessPaise = gt.cess.paise,
+                direction = gt.direction, lineOrder = gt.lineOrder, createdAt = System.currentTimeMillis()
+            )
+        }
+
+        // No real voucherId exists to correlate these rows as one Outbox aggregate - the first
+        // line's own id is used instead, the same way a multi-line Voucher uses its one voucherId
+        // regardless of how many journal lines it carries.
+        val aggregateId = entities.first().gstTransactionId
+        val outboxItem = OutboxSyncEntity(
+            syncId = UUID.randomUUID().toString(), companyId = companyId,
+            entityType = "GST_TRANSACTION", entityId = aggregateId, operation = "INSERT",
+            payloadJson = SyncEventSerializer.toJson(
+                SyncEvent(
+                    eventId = UUID.randomUUID().toString(), idempotencyKey = idempotencyKey,
+                    companyId = companyId, financialYearId = financialYearId,
+                    operation = SyncOperation.POST_GST_TRANSACTION.name,
+                    aggregateType = SyncAggregateType.GST_TRANSACTION.name,
+                    aggregateId = aggregateId,
+                    voucher = null,
+                    gstTransactions = entities.map {
+                        SyncGstTransactionDto(
+                            it.gstTransactionId, it.voucherType.name, it.partyLedgerId, it.partyGstin, it.placeOfSupply, it.supplyType.name,
+                            it.itemId, it.hsnSacCode, it.quantityRaw, it.taxableAmountPaise, it.gstRatePercent,
+                            it.cgstPaise, it.sgstPaise, it.igstPaise, it.cessPaise, it.direction.name, it.lineOrder
+                        )
+                    }
+                )
+            ),
+            idempotencyKey = idempotencyKey, syncState = SyncState.PENDING, retryCount = 0, lastError = null,
+            createdAt = System.currentTimeMillis(), updatedAt = System.currentTimeMillis()
+        )
+
+        val result = dbTransaction.postGstOnlyTransactionsAtomic(entities, outboxItem)
+        return if (result.isSuccess) {
+            AccountingResult.Success(gstTransactions)
         } else {
             AccountingResult.Failure(mapTransactionFailure(result.exceptionOrNull()))
         }
@@ -2070,7 +2174,7 @@ class AccountingRepository(
         }
 
         val report = TrialBalanceReport(
-            companyName = company?.name ?: "Apex Industrial Technologies Ltd.",
+            companyName = company?.name ?: "Company",
             financialYearCode = fyEntity?.fyCode ?: "FY 2026-27",
             asOfDate = dateRange?.endInclusive ?: LocalDate.now(),
             rows = rows,
@@ -2154,7 +2258,7 @@ class AccountingRepository(
         val netProfitPaise = grossProfitPaise + indirectIncomePaise - indirectExpensePaise
 
         return ProfitAndLossReport(
-            companyName = company?.name ?: "Apex Industrial Technologies Ltd.",
+            companyName = company?.name ?: "Company",
             financialYearCode = fy?.fyCode ?: "FY 2026-27",
             dateRange = dateRange?.let { "${it.start} to ${it.endInclusive}" } ?: "${fy?.startDate} to ${fy?.endDate}",
             salesRevenue = Money.fromPaise(salesPaise),
@@ -2202,7 +2306,7 @@ class AccountingRepository(
         val expenditurePaise = periodHierarchy.filter { it.primaryGroup == PrimaryGroup.EXPENSES }.sumOf { it.totalDebitPaise - it.totalCreditPaise }
 
         return IncomeExpenditureReport(
-            companyName = company?.name ?: "Apex Industrial Technologies Ltd.",
+            companyName = company?.name ?: "Company",
             financialYearCode = fy?.fyCode ?: "FY 2026-27",
             dateRange = dateRange?.let { "${it.start} to ${it.endInclusive}" } ?: "${fy?.startDate} to ${fy?.endDate}",
             income = Money.fromPaise(incomePaise),
@@ -2309,7 +2413,7 @@ class AccountingRepository(
         val totalAssetsPaise = fixedAssetsPaise + investmentsPaise + currentAssetsPaise + debtorsPaise + bankPaise + cashPaise + miscExpPaise + suspenseDebitPaise + stockInHandPaise
 
         val report = BalanceSheetReport(
-            companyName = company?.name ?: "Apex Industrial Technologies Ltd.",
+            companyName = company?.name ?: "Company",
             financialYearCode = fy?.fyCode ?: "FY 2026-27",
             asOfDate = dateRange?.endInclusive ?: LocalDate.now(),
             capitalAccounts = Money.fromPaise(capitalPaise),
@@ -2593,6 +2697,21 @@ class AccountingRepository(
      * them). If [party].ledgerId is non-blank, an existing ledger is adopted as-is.
      */
     suspend fun createParty(party: Party, ledgerTemplate: Ledger? = null): AccountingResult<Party> {
+        // Rule 30 (Party/Customer/Supplier Data Validation): authoritative here, not only in the
+        // UI, so no caller can bypass it (Section 7). Only runs when a NEW ledger is actually being
+        // created (ledgerTemplate != null) - linking an existing ledger's already-on-file GSTIN/
+        // registration status is never retroactively rejected (Section 10).
+        if (ledgerTemplate != null) {
+            val validationError = com.example.accounting.domain.party.PartyValidation.validateGstFacts(
+                entityType = party.entityType,
+                gstRegistrationStatus = ledgerTemplate.gstRegistrationStatus,
+                gstin = ledgerTemplate.gstin
+            )
+            if (validationError != null) {
+                return AccountingResult.Failure(AppError.ValidationError(validationError))
+            }
+        }
+
         val ledgerId: String
         if (party.ledgerId.isBlank()) {
             val template = ledgerTemplate ?: Ledger(ledgerId = "", companyId = party.companyId, groupId = "", name = party.displayName)
@@ -3369,7 +3488,7 @@ class AccountingRepository(
         val cashFromOperatingPaise = netProfitPaise - changeInCurrentAssetsExclCash + changeInCurrentLiabilities
 
         return CashFlowReport(
-            companyName = company?.name ?: "Apex Industrial Technologies Ltd.",
+            companyName = company?.name ?: "Company",
             financialYearCode = fy?.fyCode ?: "FY 2026-27",
             dateRangeLabel = "$periodStart to $periodEnd",
             netProfit = Money.fromPaise(netProfitPaise),

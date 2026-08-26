@@ -36,7 +36,9 @@ object GstLedgerIds {
  * geography fact (intra vs inter-state). A NORMAL-nature supply still resolves to INTRA/INTER_STATE
  * from [GstTransactionFacts.supplierStateCode]/[GstTransactionFacts.placeOfSupply]; EXPORT and
  * EXEMPT/NIL_RATED bypass that geography resolution entirely (zero tax regardless of state). */
-enum class GstSupplyNature { NORMAL, EXPORT, EXEMPT, NIL_RATED }
+enum class GstSupplyNature(val displayLabel: String) {
+    NORMAL("Taxable"), EXPORT("Zero Rated"), EXEMPT("Exempt"), NIL_RATED("Nil Rated")
+}
 
 /**
  * The full fact set for a single GST-bearing line (Phase 5, Priority 3) - "Place of Supply" is

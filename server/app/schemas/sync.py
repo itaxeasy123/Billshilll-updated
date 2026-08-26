@@ -32,6 +32,14 @@ class SyncStockLineDto(BaseModel):
 
 class SyncGstTransactionDto(BaseModel):
     gstTransactionId: str
+    # Transaction/Contract Hardening: optional at the schema level ONLY for backward compatibility
+    # with an already-queued (not yet synced) accounting-path event serialized by an older Android
+    # build before this field existed - parsing must never hard-fail on old data. The accounting
+    # path (apply_voucher_event) never reads this field regardless (it already has a reliable
+    # source: event.voucher.voucherType), so a missing/None value there has zero effect. The new
+    # GST-only path (apply_gst_transaction_event) DOES require it and explicitly rejects a missing
+    # value - see that module - never silently deriving it from `direction`.
+    voucherType: str | None = None
     partyLedgerId: str
     partyGstin: str = ""
     placeOfSupply: str = ""

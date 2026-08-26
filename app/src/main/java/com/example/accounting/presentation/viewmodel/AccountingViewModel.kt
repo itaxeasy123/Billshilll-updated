@@ -79,6 +79,7 @@ import com.example.accounting.domain.taxation.gst.GstCalculationEngine
 import com.example.accounting.domain.taxation.gst.GstDirection
 import com.example.accounting.domain.taxation.gst.GstFilingPeriod
 import com.example.accounting.domain.taxation.gst.GstLedgerIds
+import com.example.accounting.domain.taxation.gst.GstSupplyNature
 import com.example.accounting.domain.taxation.gst.SupplyType
 import com.example.accounting.domain.trading.OutstandingInvoice
 import com.example.accounting.domain.trading.TradingLineInput
@@ -221,12 +222,10 @@ class AccountingViewModel(application: Application) : AndroidViewModel(applicati
     private var fyDataJob: Job? = null
 
     init {
+        // No auto-seeded default company (removed - see AccountingRepository.seedInitialDataForCompany's
+        // own doc): a fresh install starts with zero companies, exactly as loadCompaniesAndInitialData
+        // already handles (currentCompany stays null; AppTopBar renders "Select Company").
         viewModelScope.launch {
-            try {
-                repository.initializeDatabaseIfNeeded()
-            } catch (e: Throwable) {
-                android.util.Log.e("AccountingViewModel", "Init DB error", e)
-            }
             loadCompaniesAndInitialData()
         }
 
@@ -866,8 +865,15 @@ class AccountingViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     /** One item line as entered in the Sale/Purchase item picker - just the facts the user
-     * actually chooses (item, quantity, rate); HSN/GST rate are looked up from the item itself. */
-    data class TradingLineForm(val itemId: String, val quantity: Double, val rate: Money)
+     * actually chooses (item, quantity, rate); HSN/GST rate are looked up from the item itself.
+     * [supplyNature] (UI-06) is the line's Tax Treatment - defaults to NORMAL (Taxable), matching
+     * every line's behavior before this field existed. */
+    data class TradingLineForm(
+        val itemId: String,
+        val quantity: Double,
+        val rate: Money,
+        val supplyNature: GstSupplyNature = GstSupplyNature.NORMAL
+    )
 
     fun postSaleInvoice(
         customerLedgerId: String,
@@ -937,7 +943,7 @@ class AccountingViewModel(application: Application) : AndroidViewModel(applicati
                 TradingLineInput(
                     itemId = item.itemId, itemName = item.name, hsnSacCode = item.hsnCode,
                     quantity = com.example.accounting.core.common.Quantity.fromDouble(line.quantity, item.unit),
-                    rate = line.rate, gstRatePercent = item.gstRatePercent
+                    rate = line.rate, gstRatePercent = item.gstRatePercent, supplyNature = line.supplyNature
                 )
             }
 
@@ -946,9 +952,18 @@ class AccountingViewModel(application: Application) : AndroidViewModel(applicati
             val voucherNumber = repository.generateNextVoucherNumber(comp.companyId, fy.financialYearId, voucherType)
             val gstLedgers = repository.resolveGstLedgerRefs(comp.companyId)
             val roundOffRef = repository.resolveRoundOffLedgerRef(comp.companyId)
-            // Place of Supply defaults to the party's own state (Priority 3) - the intra/inter-state
-            // split is derived from company-state vs place-of-supply, never a UI toggle.
-            val placeOfSupply = partyLedger.stateCode.ifBlank { comp.stateCode }
+            // Place of Supply (Priority 3 / Rule 29): must come from the party's own real state -
+            // never defaulted to the company's own state. Falling back to the company's state would
+            // silently force every such Sale/Purchase to resolve as INTRA_STATE regardless of the
+            // party's actual location, which is a wrong GST classification with no visible error.
+            if (partyLedger.stateCode.isBlank()) {
+                emitMessage(
+                    "Validation error: Set a State for ${if (isSale) "customer" else "supplier"} " +
+                        "'${partyLedger.name}' before posting - Place of Supply cannot be determined."
+                )
+                return@launch
+            }
+            val placeOfSupply = partyLedger.stateCode
 
             val engineResult = if (isSale) {
                 TradingWorkflowEngine.buildSale(
@@ -1185,13 +1200,20 @@ class AccountingViewModel(application: Application) : AndroidViewModel(applicati
         gstin: String = "",
         phone: String = "",
         email: String = "",
-        address: String = ""
+        address: String = "",
+        stateCode: String = "",
+        gstRegistrationStatus: com.example.accounting.domain.accounting.GstRegistrationStatus? = null
     ) {
         viewModelScope.launch {
             val comp = _uiState.value.currentCompany ?: return@launch
+            // Rule 29/30: the party's State must come from what was actually entered for THIS
+            // party - never defaulted to the company's own state code. Left blank when unknown,
+            // exactly like a fresh Ledger; the posting-time guard (Rule 29) is what actually
+            // requires it, not creation.
             val ledgerTemplate = Ledger(
                 ledgerId = "", companyId = comp.companyId, groupId = "", name = displayName,
-                gstin = gstin, phone = phone, email = email, address = address, stateCode = comp.stateCode
+                gstin = gstin, phone = phone, email = email, address = address, stateCode = stateCode,
+                gstRegistrationStatus = gstRegistrationStatus
             )
             val result = partyService.createParty(
                 Party(partyId = "", companyId = comp.companyId, ledgerId = "", role = role, entityType = entityType, displayName = displayName),
@@ -1527,6 +1549,70 @@ class AccountingViewModel(application: Application) : AndroidViewModel(applicati
         val file = File(getApplication<Application>().cacheDir, "voucher_export_${System.currentTimeMillis()}.$ext")
         file.writeText(exportResult.content)
         return documentPreviewService.buildShareIntent(getApplication(), file, mimeType)
+    }
+
+    /** Export + Share for the report screens (Phase UI-REPORT-01) - mirrors [exportVoucherAndShare]'s
+     * exact pattern, never a second export/share mechanism. Only the three report kinds
+     * [ExportManagementService] actually has a method for reach here - [reportKey] values for
+     * Ledger Statement/Day Book/Income & Expenditure (no `ExportType` exists for any of them) are
+     * never passed by the UI and return null here defensively. Trial Balance exports as CSV (a
+     * genuinely tabular report, per `ExportFormatSupport`); Profit & Loss/Balance Sheet export as
+     * JSON, their only supported format today - never a guessed CSV that `ExportFormatSupport`
+     * would reject. */
+    suspend fun exportReportAndShare(reportKey: String): android.content.Intent? {
+        val comp = _uiState.value.currentCompany ?: return null
+        val fy = _uiState.value.currentFinancialYear ?: return null
+        val format = if (reportKey == "Trial Balance") {
+            com.example.accounting.domain.export.ExportFormat.CSV
+        } else {
+            com.example.accounting.domain.export.ExportFormat.JSON
+        }
+        val result = when (reportKey) {
+            "Trial Balance" -> exportService.exportTrialBalance(comp.companyId, fy.financialYearId, format)
+            "Profit & Loss" -> exportService.exportProfitAndLoss(comp.companyId, fy.financialYearId, format)
+            "Balance Sheet" -> exportService.exportBalanceSheet(comp.companyId, fy.financialYearId, format)
+            else -> return null
+        }
+        if (result is AccountingResult.Failure) {
+            emitMessage("Export failed: ${result.error.message}")
+            return null
+        }
+        val exportResult = (result as AccountingResult.Success).data
+        val ext = if (format == com.example.accounting.domain.export.ExportFormat.CSV) "csv" else "json"
+        val mimeType = if (ext == "csv") "text/csv" else "application/json"
+        val safeName = reportKey.lowercase().replace(" & ", "_").replace(" ", "_")
+        val file = File(getApplication<Application>().cacheDir, "${safeName}_export_${System.currentTimeMillis()}.$ext")
+        file.writeText(exportResult.content)
+        return documentPreviewService.buildShareIntent(getApplication(), file, mimeType)
+    }
+
+    /** Plain-text share summary for the same three report kinds - pure formatting of figures
+     * [AccountingUiState] already computed and is already displaying on screen (never a
+     * recalculation); a lighter-weight alternative to [exportReportAndShare] for a quick
+     * WhatsApp/SMS-style share that doesn't need a full JSON/CSV file attachment. Returns null for
+     * anything not yet loaded or not one of the three supported keys. */
+    fun buildReportShareText(reportKey: String): String? {
+        val comp = _uiState.value.currentCompany ?: return null
+        return when (reportKey) {
+            "Trial Balance" -> _uiState.value.trialBalance?.let {
+                "Trial Balance - ${comp.name} (${it.financialYearCode})\n" +
+                    "Total Debit: ${it.totalClosingDebit.formatPlain()}\n" +
+                    "Total Credit: ${it.totalClosingCredit.formatPlain()}\n" +
+                    "Balanced: ${if (it.isBalanced) "Yes" else "No"}"
+            }
+            "Profit & Loss" -> _uiState.value.profitAndLoss?.let {
+                "Profit & Loss - ${comp.name} (${it.financialYearCode})\n" +
+                    "Gross Profit: ${it.grossProfit.formatPlain()}\n" +
+                    "Net Profit: ${it.netProfit.formatPlain()}"
+            }
+            "Balance Sheet" -> _uiState.value.balanceSheet?.let {
+                "Balance Sheet - ${comp.name} (${it.financialYearCode})\n" +
+                    "Total Assets: ${it.totalAssets.formatPlain()}\n" +
+                    "Total Liabilities: ${it.totalLiabilities.formatPlain()}\n" +
+                    "Balanced: ${if (it.isBalanced) "Yes" else "No"}"
+            }
+            else -> null
+        }
     }
 }
 

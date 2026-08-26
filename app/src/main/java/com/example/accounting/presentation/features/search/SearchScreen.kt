@@ -12,14 +12,11 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -34,6 +31,7 @@ import com.example.accounting.domain.accounting.Ledger
 import com.example.accounting.domain.accounting.Voucher
 import com.example.accounting.domain.inventory.StockItem
 import com.example.accounting.domain.party.Party
+import com.example.accounting.presentation.components.SearchField
 import com.example.accounting.presentation.components.SectionCard
 
 /**
@@ -68,13 +66,10 @@ fun SearchScreen(
     Column(modifier = modifier.fillMaxSize()) {
         Row(modifier = Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back") }
-            OutlinedTextField(
-                value = query,
-                onValueChange = { query = it },
-                placeholder = { Text("Search customers, suppliers, accounts, transactions, items...") },
-                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
-                shape = RoundedCornerShape(12.dp),
-                singleLine = true,
+            SearchField(
+                query = query,
+                onQueryChange = { query = it },
+                placeholder = "Search customers, suppliers, accounts, transactions, items...",
                 modifier = Modifier.weight(1f)
             )
         }
