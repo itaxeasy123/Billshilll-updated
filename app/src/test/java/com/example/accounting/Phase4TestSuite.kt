@@ -717,8 +717,9 @@ class Phase4TestSuite {
     @Test
     fun j4_GstCalculationEngine_OutputAndInputLedgerIds_AreDistinctPerTaxType() {
         val allIds = com.example.accounting.domain.taxation.gst.GstLedgerIds.ALL_BARE_IDS
-        // Seven distinct GST ledgers as of Phase 5: Output x3 + Input x3 + CESS x1, never conflated.
-        assertEquals("Seven distinct GST ledgers - Output x3 + Input x3 + CESS, never conflated", 7, allIds.toSet().size)
+        // Thirteen distinct GST ledgers as of Rule 31: Output x3 + Input x3 + CESS x1 (Phase 5) +
+        // RCM Liability x3 + RCM Input x3 (Rule 31), never conflated.
+        assertEquals("Thirteen distinct GST ledgers - Output x3 + Input x3 + CESS + RCM Liability x3 + RCM Input x3, never conflated", 13, allIds.toSet().size)
 
         assertTrue(com.example.accounting.domain.taxation.gst.GstLedgerIds.OUTPUT_CGST_LEDGER_ID != com.example.accounting.domain.taxation.gst.GstLedgerIds.INPUT_CGST_LEDGER_ID)
         assertTrue(com.example.accounting.domain.taxation.gst.GstLedgerIds.OUTPUT_SGST_LEDGER_ID != com.example.accounting.domain.taxation.gst.GstLedgerIds.INPUT_SGST_LEDGER_ID)

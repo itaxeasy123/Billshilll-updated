@@ -872,7 +872,10 @@ class AccountingViewModel(application: Application) : AndroidViewModel(applicati
         val itemId: String,
         val quantity: Double,
         val rate: Money,
-        val supplyNature: GstSupplyNature = GstSupplyNature.NORMAL
+        val supplyNature: GstSupplyNature = GstSupplyNature.NORMAL,
+        /** Rule 31 (Purchase/RCM Foundation) - defaults to FORWARD_CHARGE, matching every line's
+         * behavior before this field existed. Only meaningful on a Purchase line. */
+        val chargeType: com.example.accounting.domain.taxation.gst.GstChargeType = com.example.accounting.domain.taxation.gst.GstChargeType.FORWARD_CHARGE
     )
 
     fun postSaleInvoice(
@@ -921,6 +924,16 @@ class AccountingViewModel(application: Application) : AndroidViewModel(applicati
                 emitMessage("Validation error: Add at least one item line.")
                 return@launch
             }
+            // Rule 31 (Purchase/RCM Foundation): graceful, user-facing pre-checks - the matching
+            // authoritative require() backstops live in TradingWorkflowEngine.build() itself.
+            if (isSale && lines.any { it.chargeType == com.example.accounting.domain.taxation.gst.GstChargeType.REVERSE_CHARGE }) {
+                emitMessage("Validation error: Reverse charge is not applicable to a Sale.")
+                return@launch
+            }
+            if (lines.any { it.chargeType == com.example.accounting.domain.taxation.gst.GstChargeType.REVERSE_CHARGE && it.supplyNature != GstSupplyNature.NORMAL }) {
+                emitMessage("Validation error: Reverse charge requires a Taxable line - it cannot be combined with Zero Rated/Exempt/Nil Rated.")
+                return@launch
+            }
 
             // Backfill GST duty ledgers and the Round Off ledger for companies seeded before this
             // structure existed - idempotent, safe every call.
@@ -943,7 +956,8 @@ class AccountingViewModel(application: Application) : AndroidViewModel(applicati
                 TradingLineInput(
                     itemId = item.itemId, itemName = item.name, hsnSacCode = item.hsnCode,
                     quantity = com.example.accounting.core.common.Quantity.fromDouble(line.quantity, item.unit),
-                    rate = line.rate, gstRatePercent = item.gstRatePercent, supplyNature = line.supplyNature
+                    rate = line.rate, gstRatePercent = item.gstRatePercent, supplyNature = line.supplyNature,
+                    chargeType = line.chargeType
                 )
             }
 

@@ -24,13 +24,40 @@ object GstLedgerIds {
      * (Phase 5, Priority 5), unlike CGST/SGST/IGST which always have a reciprocal Input/Output pair. */
     const val CESS_LEDGER_ID = "LED_GST_CESS"
 
-    /** All seven, for seeding/backfill iteration. */
+    /**
+     * Rule 31 (Purchase/RCM Foundation) - reverse-charge duty ledgers, deliberately distinct from
+     * [INPUT_CGST_LEDGER_ID]/etc. (ordinary forward-charge Input Tax Credit) and from the supplier
+     * payable ledger. Under RCM the *recipient* self-assesses the tax: [RCM_LIABILITY_CGST_LEDGER_ID]
+     * (Credit) is the amount payable directly to the government, and [RCM_INPUT_CGST_LEDGER_ID]
+     * (Debit) is the corresponding Input Tax Credit claim - the two are posted as an exact,
+     * self-balancing pair (see [com.example.accounting.domain.trading.TradingWorkflowEngine]),
+     * never conflated with the ordinary Input/Output pair above.
+     */
+    const val RCM_LIABILITY_CGST_LEDGER_ID = "LED_GST_RCM_LIABILITY_CGST"
+    const val RCM_LIABILITY_SGST_LEDGER_ID = "LED_GST_RCM_LIABILITY_SGST"
+    const val RCM_LIABILITY_IGST_LEDGER_ID = "LED_GST_RCM_LIABILITY_IGST"
+    const val RCM_INPUT_CGST_LEDGER_ID = "LED_GST_RCM_INPUT_CGST"
+    const val RCM_INPUT_SGST_LEDGER_ID = "LED_GST_RCM_INPUT_SGST"
+    const val RCM_INPUT_IGST_LEDGER_ID = "LED_GST_RCM_INPUT_IGST"
+
+    /** All thirteen, for seeding/backfill iteration. */
     val ALL_BARE_IDS = listOf(
         OUTPUT_CGST_LEDGER_ID, OUTPUT_SGST_LEDGER_ID, OUTPUT_IGST_LEDGER_ID,
         INPUT_CGST_LEDGER_ID, INPUT_SGST_LEDGER_ID, INPUT_IGST_LEDGER_ID,
-        CESS_LEDGER_ID
+        CESS_LEDGER_ID,
+        RCM_LIABILITY_CGST_LEDGER_ID, RCM_LIABILITY_SGST_LEDGER_ID, RCM_LIABILITY_IGST_LEDGER_ID,
+        RCM_INPUT_CGST_LEDGER_ID, RCM_INPUT_SGST_LEDGER_ID, RCM_INPUT_IGST_LEDGER_ID
     )
 }
+
+/**
+ * Rule 31 (Purchase/RCM Foundation) - who is liable to remit the tax on a supply. Independent of
+ * [GstSupplyNature] (which decides the *rate treatment*: taxable/zero-rated/exempt/nil-rated) and
+ * independent of [com.example.accounting.domain.accounting.Ledger.gstRegistrationStatus] (a
+ * supplier *fact*, never the trigger - see [com.example.accounting.domain.trading.TradingLineInput.chargeType]'s
+ * KDoc). A line is FORWARD_CHARGE unless a user explicitly marks it REVERSE_CHARGE.
+ */
+enum class GstChargeType { FORWARD_CHARGE, REVERSE_CHARGE }
 
 /** Legal nature of a supply (Phase 5, Priority 3) - distinct from [SupplyType], which is purely a
  * geography fact (intra vs inter-state). A NORMAL-nature supply still resolves to INTRA/INTER_STATE

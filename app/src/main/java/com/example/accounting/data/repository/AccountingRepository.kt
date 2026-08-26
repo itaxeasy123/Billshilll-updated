@@ -615,7 +615,8 @@ class AccountingRepository(
         return AccountingResult.Success(Unit)
     }
 
-    /** The 6 standard GST duty ledgers (Output/Input x CGST/SGST/IGST) for a company - never one ledger conflating both directions. */
+    /** The standard GST duty ledgers (Output/Input x CGST/SGST/IGST, CESS, and Rule 31's
+     * RCM Liability/Input x CGST/SGST/IGST) for a company - never one ledger conflating two of these. */
     private fun gstLedgersFor(companyId: String): List<LedgerEntity> {
         fun ledger(bareId: String, name: String, code: String, type: DrCr) = LedgerEntity(
             ledgerId = "${bareId}_$companyId", companyId = companyId, groupId = "GRP_DUTIES_$companyId",
@@ -631,7 +632,16 @@ class AccountingRepository(
             ledger(GstLedgerIds.INPUT_CGST_LEDGER_ID, "Input CGST A/c", "5004", DrCr.DEBIT),
             ledger(GstLedgerIds.INPUT_SGST_LEDGER_ID, "Input SGST A/c", "5005", DrCr.DEBIT),
             ledger(GstLedgerIds.INPUT_IGST_LEDGER_ID, "Input IGST A/c", "5006", DrCr.DEBIT),
-            ledger(GstLedgerIds.CESS_LEDGER_ID, "CESS A/c", "5007", DrCr.CREDIT)
+            ledger(GstLedgerIds.CESS_LEDGER_ID, "CESS A/c", "5007", DrCr.CREDIT),
+            // Rule 31 (Purchase/RCM Foundation) - RCM Liability is payable to the government
+            // (natural CREDIT balance, same family as Output); RCM Input is the corresponding
+            // Input Tax Credit claim (natural DEBIT balance, same family as Input).
+            ledger(GstLedgerIds.RCM_LIABILITY_CGST_LEDGER_ID, "RCM Liability CGST A/c", "5008", DrCr.CREDIT),
+            ledger(GstLedgerIds.RCM_LIABILITY_SGST_LEDGER_ID, "RCM Liability SGST A/c", "5009", DrCr.CREDIT),
+            ledger(GstLedgerIds.RCM_LIABILITY_IGST_LEDGER_ID, "RCM Liability IGST A/c", "5010", DrCr.CREDIT),
+            ledger(GstLedgerIds.RCM_INPUT_CGST_LEDGER_ID, "RCM Input CGST A/c", "5011", DrCr.DEBIT),
+            ledger(GstLedgerIds.RCM_INPUT_SGST_LEDGER_ID, "RCM Input SGST A/c", "5012", DrCr.DEBIT),
+            ledger(GstLedgerIds.RCM_INPUT_IGST_LEDGER_ID, "RCM Input IGST A/c", "5013", DrCr.DEBIT)
         )
     }
 
@@ -693,7 +703,13 @@ class AccountingRepository(
             inputCgst = ref(GstLedgerIds.INPUT_CGST_LEDGER_ID),
             inputSgst = ref(GstLedgerIds.INPUT_SGST_LEDGER_ID),
             inputIgst = ref(GstLedgerIds.INPUT_IGST_LEDGER_ID),
-            cess = ref(GstLedgerIds.CESS_LEDGER_ID)
+            cess = ref(GstLedgerIds.CESS_LEDGER_ID),
+            rcmLiabilityCgst = ref(GstLedgerIds.RCM_LIABILITY_CGST_LEDGER_ID),
+            rcmLiabilitySgst = ref(GstLedgerIds.RCM_LIABILITY_SGST_LEDGER_ID),
+            rcmLiabilityIgst = ref(GstLedgerIds.RCM_LIABILITY_IGST_LEDGER_ID),
+            rcmInputCgst = ref(GstLedgerIds.RCM_INPUT_CGST_LEDGER_ID),
+            rcmInputSgst = ref(GstLedgerIds.RCM_INPUT_SGST_LEDGER_ID),
+            rcmInputIgst = ref(GstLedgerIds.RCM_INPUT_IGST_LEDGER_ID)
         )
     }
 
@@ -752,7 +768,7 @@ class AccountingRepository(
                 taxableAmount = Money.fromPaise(it.taxableAmountPaise), gstRatePercent = it.gstRatePercent,
                 cgst = Money.fromPaise(it.cgstPaise), sgst = Money.fromPaise(it.sgstPaise),
                 igst = Money.fromPaise(it.igstPaise), cess = Money.fromPaise(it.cessPaise),
-                direction = it.direction, lineOrder = it.lineOrder
+                direction = it.direction, lineOrder = it.lineOrder, chargeType = it.chargeType
             )
         }
 
@@ -772,7 +788,7 @@ class AccountingRepository(
                 taxableAmount = Money.fromPaise(it.taxableAmountPaise), gstRatePercent = it.gstRatePercent,
                 cgst = Money.fromPaise(it.cgstPaise), sgst = Money.fromPaise(it.sgstPaise),
                 igst = Money.fromPaise(it.igstPaise), cess = Money.fromPaise(it.cessPaise),
-                direction = it.direction, lineOrder = it.lineOrder
+                direction = it.direction, lineOrder = it.lineOrder, chargeType = it.chargeType
             )
         }
 
@@ -1564,7 +1580,8 @@ class AccountingRepository(
                 itemId = gt.itemId, hsnSacCode = gt.hsnSacCode, quantityRaw = gt.quantity?.rawValue,
                 taxableAmountPaise = gt.taxableAmount.paise, gstRatePercent = gt.gstRatePercent,
                 cgstPaise = gt.cgst.paise, sgstPaise = gt.sgst.paise, igstPaise = gt.igst.paise, cessPaise = gt.cess.paise,
-                direction = gt.direction, lineOrder = gt.lineOrder, createdAt = System.currentTimeMillis()
+                direction = gt.direction, lineOrder = gt.lineOrder, createdAt = System.currentTimeMillis(),
+                chargeType = gt.chargeType
             )
         }
 
@@ -1639,7 +1656,8 @@ class AccountingRepository(
                 itemId = gt.itemId, hsnSacCode = gt.hsnSacCode, quantityRaw = gt.quantity?.rawValue,
                 taxableAmountPaise = gt.taxableAmount.paise, gstRatePercent = gt.gstRatePercent,
                 cgstPaise = gt.cgst.paise, sgstPaise = gt.sgst.paise, igstPaise = gt.igst.paise, cessPaise = gt.cess.paise,
-                direction = gt.direction, lineOrder = gt.lineOrder, createdAt = System.currentTimeMillis()
+                direction = gt.direction, lineOrder = gt.lineOrder, createdAt = System.currentTimeMillis(),
+                chargeType = gt.chargeType
             )
         }
 

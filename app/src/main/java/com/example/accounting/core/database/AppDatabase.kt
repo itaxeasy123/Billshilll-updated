@@ -83,7 +83,7 @@ import com.example.accounting.data.local.entity.VoucherStockLineEntity
         CompanySubscriptionEntity::class,
         BankUpiProfileEntity::class
     ],
-    version = 12,
+    version = 13,
     exportSchema = false
 )
 @TypeConverters(RoomConverters::class)
@@ -858,6 +858,18 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
-        val ALL_MIGRATIONS: Array<Migration> = arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12)
+        /**
+         * Rule 31 (Purchase/RCM Foundation) - adds the storage column for
+         * [com.example.accounting.domain.taxation.gst.GstTransaction.chargeType]. A plain NOT NULL
+         * column with a real, correct default: every pre-existing row was posted before RCM existed
+         * in this codebase at all, so it genuinely was FORWARD_CHARGE - not a guess.
+         */
+        val MIGRATION_12_13 = object : Migration(12, 13) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE gst_transactions ADD COLUMN chargeType TEXT NOT NULL DEFAULT 'FORWARD_CHARGE'")
+            }
+        }
+
+        val ALL_MIGRATIONS: Array<Migration> = arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13)
     }
 }

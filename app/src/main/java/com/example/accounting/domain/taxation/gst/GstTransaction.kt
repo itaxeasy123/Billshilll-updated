@@ -33,5 +33,9 @@ data class GstTransaction(
     val igst: Money,
     val cess: Money,
     val direction: GstDirection,
-    val lineOrder: Int
+    val lineOrder: Int,
+    /** Rule 31 (Purchase/RCM Foundation) - who is liable to remit this line's tax. Defaults to
+     * FORWARD_CHARGE so every pre-existing construction site (buildGstOnlySale, buildNote's
+     * `.copy()`, tests) keeps compiling and behaving identically. */
+    val chargeType: GstChargeType = GstChargeType.FORWARD_CHARGE
 )

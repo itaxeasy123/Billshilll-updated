@@ -42,6 +42,7 @@ import com.example.accounting.core.common.Money
 import com.example.accounting.domain.accounting.Ledger
 import com.example.accounting.domain.inventory.StockItem
 import com.example.accounting.domain.taxation.gst.GstCalculationEngine
+import com.example.accounting.domain.taxation.gst.GstChargeType
 import com.example.accounting.domain.taxation.gst.GstSupplyNature
 import com.example.accounting.domain.taxation.gst.GstTransactionFacts
 import java.util.UUID
@@ -51,7 +52,10 @@ internal data class LineFormState(
     val itemId: String = "",
     val quantityInput: String = "1",
     val rateInput: String = "",
-    val supplyNature: GstSupplyNature = GstSupplyNature.NORMAL
+    val supplyNature: GstSupplyNature = GstSupplyNature.NORMAL,
+    /** Rule 31 (Purchase/RCM Foundation) - only meaningful on a Purchase line with
+     * [supplyNature] == NORMAL; [VoucherLineItemCard] only offers the control in that case. */
+    val chargeType: GstChargeType = GstChargeType.FORWARD_CHARGE
 )
 
 /**
@@ -284,13 +288,35 @@ private fun VoucherLineItemCard(
                     options = GstSupplyNature.entries,
                     selectedOption = line.supplyNature,
                     optionLabel = { it.displayLabel },
-                    onSelect = { onLineChange(line.copy(supplyNature = it)) },
+                    onSelect = {
+                        // Rule 31: Reverse Charge only ever makes sense on a Taxable line - moving
+                        // away from NORMAL always resets it, rather than leaving a stale invalid combo.
+                        onLineChange(line.copy(supplyNature = it, chargeType = if (it == GstSupplyNature.NORMAL) line.chargeType else GstChargeType.FORWARD_CHARGE))
+                    },
                     modifier = Modifier.fillMaxWidth()
                 )
+                // Rule 31 (Purchase/RCM Foundation) - only offered for a Purchase, Taxable line;
+                // RCM never applies to a Sale (this app models Sales as outward supply only) and
+                // never applies to a zero-tax line (nothing to reverse-charge).
+                if (!isSale && line.supplyNature == GstSupplyNature.NORMAL) {
+                    Spacer(modifier = Modifier.height(6.dp))
+                    SelectField(
+                        label = "Reverse Charge (RCM)",
+                        options = GstChargeType.entries,
+                        selectedOption = line.chargeType,
+                        optionLabel = { if (it == GstChargeType.REVERSE_CHARGE) "Reverse Charge - self-assessed" else "Forward Charge - billed by supplier" },
+                        onSelect = { onLineChange(line.copy(chargeType = it)) },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
                     text = if (line.supplyNature == GstSupplyNature.NORMAL) {
-                        "Amount ${lineTaxable.formatPlain()} - GST ${item.gstRatePercent}% - HSN ${item.hsnCode.ifBlank { "-" }}"
+                        if (line.chargeType == GstChargeType.REVERSE_CHARGE) {
+                            "Amount ${lineTaxable.formatPlain()} - GST ${item.gstRatePercent}% (Reverse Charge - self-assessed, not billed by supplier) - HSN ${item.hsnCode.ifBlank { "-" }}"
+                        } else {
+                            "Amount ${lineTaxable.formatPlain()} - GST ${item.gstRatePercent}% - HSN ${item.hsnCode.ifBlank { "-" }}"
+                        }
                     } else {
                         "Amount ${lineTaxable.formatPlain()} - ${item.gstRatePercent}% GST (${line.supplyNature.displayLabel} - no tax charged) - HSN ${item.hsnCode.ifBlank { "-" }}"
                     },

@@ -192,7 +192,7 @@ class Phase0TestSuite {
     // ==========================================
     @Test
     fun testRoomDatabaseCreation_Invariants() {
-        // AppDatabase class must exist. Schema is now version 12 (Phase 4: inventory tables +
+        // AppDatabase class must exist. Schema is now version 13 (Phase 4: inventory tables +
         // company accountingMode/businessType columns; Phase 5: GST transactions/settlement
         // allocations/GST filing periods + voucher referenceVoucherId/paymentMode columns; Phase
         // 7A: parties/invoices/invoice_lines tables; Phase 7B: trade_documents/trade_document_lines
@@ -203,10 +203,11 @@ class Phase0TestSuite {
         // tables; Phase 7J-B: voucher_drafts/voucher_draft_lines/voucher_document_references/
         // company_subscriptions/bank_upi_profiles tables; GST Settings: company gstEnabled column;
         // Architecture Checkpoint: gst_transactions.voucherId relaxed to nullable; Rule 30: Party
-        // Data Validation: ledgers.gstRegistrationStatus column), backed by exactly eleven explicit,
-        // non-destructive migrations - see testMigrationInfrastructure_ExplicitRegistry.
+        // Data Validation: ledgers.gstRegistrationStatus column; Rule 31: Purchase/RCM Foundation:
+        // gst_transactions.chargeType column), backed by exactly twelve explicit, non-destructive
+        // migrations - see testMigrationInfrastructure_ExplicitRegistry.
         assertNotNull(AppDatabase::class.java)
-        assertEquals(11, AppDatabase.ALL_MIGRATIONS.size)
+        assertEquals(12, AppDatabase.ALL_MIGRATIONS.size)
     }
 
     // ==========================================
@@ -216,7 +217,7 @@ class Phase0TestSuite {
     fun testMigrationInfrastructure_ExplicitRegistry() {
         val migrations = AppDatabase.ALL_MIGRATIONS
         assertNotNull("Explicit migrations array must be defined", migrations)
-        assertEquals("Version 1->2 (Phase 4), 2->3 (Phase 5), 3->4 (Phase 7A), 4->5 (Phase 7B), 5->6 (Phase 7D), 6->7 (Business Profile hardening), 7->8 (Phase 7F: Recurring Voucher Engine), 8->9 (Phase 7J-B: Management Layer), 9->10 (GST Settings: company gstEnabled column), 10->11 (Architecture Checkpoint: gst_transactions.voucherId relaxed to nullable), and 11->12 (Rule 30: Party Data Validation - ledgers.gstRegistrationStatus column) are the only migrations registered so far", 11, migrations.size)
+        assertEquals("Version 1->2 (Phase 4), 2->3 (Phase 5), 3->4 (Phase 7A), 4->5 (Phase 7B), 5->6 (Phase 7D), 6->7 (Business Profile hardening), 7->8 (Phase 7F: Recurring Voucher Engine), 8->9 (Phase 7J-B: Management Layer), 9->10 (GST Settings: company gstEnabled column), 10->11 (Architecture Checkpoint: gst_transactions.voucherId relaxed to nullable), 11->12 (Rule 30: Party Data Validation - ledgers.gstRegistrationStatus column), and 12->13 (Rule 31: Purchase/RCM Foundation - gst_transactions.chargeType column) are the only migrations registered so far", 12, migrations.size)
         assertEquals(1, migrations[0].startVersion)
         assertEquals(2, migrations[0].endVersion)
         assertEquals(2, migrations[1].startVersion)
@@ -239,6 +240,8 @@ class Phase0TestSuite {
         assertEquals(11, migrations[9].endVersion)
         assertEquals(11, migrations[10].startVersion)
         assertEquals(12, migrations[10].endVersion)
+        assertEquals(12, migrations[11].startVersion)
+        assertEquals(13, migrations[11].endVersion)
     }
 
     // ==========================================

@@ -36,6 +36,7 @@ import com.example.accounting.domain.party.PartyEntityType
 import com.example.accounting.domain.party.PartyRole
 import com.example.accounting.domain.party.PartyValidation
 import com.example.accounting.domain.taxation.gst.GstCalculationEngine
+import com.example.accounting.domain.taxation.gst.GstChargeType
 import com.example.accounting.domain.taxation.gst.GstDirection
 import com.example.accounting.domain.taxation.gst.GstLedgerIds
 import com.example.accounting.domain.taxation.gst.GstSupplyNature
@@ -153,7 +154,13 @@ class Phase5TestSuite {
         inputCgst = LedgerRef("${GstLedgerIds.INPUT_CGST_LEDGER_ID}_$company", "Input CGST A/c"),
         inputSgst = LedgerRef("${GstLedgerIds.INPUT_SGST_LEDGER_ID}_$company", "Input SGST A/c"),
         inputIgst = LedgerRef("${GstLedgerIds.INPUT_IGST_LEDGER_ID}_$company", "Input IGST A/c"),
-        cess = LedgerRef("${GstLedgerIds.CESS_LEDGER_ID}_$company", "CESS A/c")
+        cess = LedgerRef("${GstLedgerIds.CESS_LEDGER_ID}_$company", "CESS A/c"),
+        rcmLiabilityCgst = LedgerRef("${GstLedgerIds.RCM_LIABILITY_CGST_LEDGER_ID}_$company", "RCM Liability CGST A/c"),
+        rcmLiabilitySgst = LedgerRef("${GstLedgerIds.RCM_LIABILITY_SGST_LEDGER_ID}_$company", "RCM Liability SGST A/c"),
+        rcmLiabilityIgst = LedgerRef("${GstLedgerIds.RCM_LIABILITY_IGST_LEDGER_ID}_$company", "RCM Liability IGST A/c"),
+        rcmInputCgst = LedgerRef("${GstLedgerIds.RCM_INPUT_CGST_LEDGER_ID}_$company", "RCM Input CGST A/c"),
+        rcmInputSgst = LedgerRef("${GstLedgerIds.RCM_INPUT_SGST_LEDGER_ID}_$company", "RCM Input SGST A/c"),
+        rcmInputIgst = LedgerRef("${GstLedgerIds.RCM_INPUT_IGST_LEDGER_ID}_$company", "RCM Input IGST A/c")
     )
 
     private fun JournalItem.toEntity() = JournalItemEntity(itemId, voucherId, companyId, financialYearId, ledgerId, type, amount.paise, narration, lineOrder)
@@ -161,7 +168,7 @@ class Phase5TestSuite {
     private fun GstTransaction.toEntity() = GstTransactionEntity(
         gstTransactionId, companyId, financialYearId, voucherId, voucherType, partyLedgerId, partyGstin, placeOfSupply,
         supplyType, itemId, hsnSacCode, quantity?.rawValue, taxableAmount.paise, gstRatePercent, cgst.paise, sgst.paise,
-        igst.paise, cess.paise, direction, lineOrder, createdAt = 0L
+        igst.paise, cess.paise, direction, lineOrder, createdAt = 0L, chargeType = chargeType
     )
 
     private suspend fun postResult(
@@ -1138,5 +1145,147 @@ class Phase5TestSuite {
         assertTrue("A Party created under Company A must never be visible under Company B", partiesInB.isEmpty())
         val ledgersInB = repo.getLedgers("COMP_PARTY_B").first()
         assertTrue("Company A's new Party ledger must never leak into Company B's ledgers", ledgersInB.none { it.name == "A's Customer" })
+    }
+
+    // ==========================================
+    // H. PURCHASE / RCM FOUNDATION (Rule 31)
+    // ==========================================
+
+    @Test
+    fun h1_Purchase_RegisteredSupplier_ForwardCharge_PostsOrdinaryInputTax() {
+        val result = TradingWorkflowEngine.buildPurchase(
+            "V1", companyId, fyId, "LED_CREDITOR", "Supplier", "27AAAAA0000A1Z5", "LED_PURCHASE", "Purchase",
+            "27", "27", listOf(line("ITEM_A", 1, 1000_00L, 18.0)), gstLedgerRefs(companyId), "LED_RO", "Round Off"
+        )
+        assertTrue(result.journalItems.any { it.ledgerId == "${GstLedgerIds.INPUT_CGST_LEDGER_ID}_$companyId" })
+        assertTrue(result.journalItems.any { it.ledgerId == "${GstLedgerIds.INPUT_SGST_LEDGER_ID}_$companyId" })
+        assertTrue("An ordinary forward-charge Purchase must never touch any RCM ledger", result.journalItems.none { it.ledgerId.contains("RCM") })
+        assertEquals(GstChargeType.FORWARD_CHARGE, result.gstTransactions.first().chargeType)
+    }
+
+    @Test
+    fun h2_Purchase_UnregisteredSupplier_DoesNotAutomaticallyBecomeRcm() {
+        // "Unregistered supplier" is a Ledger-level fact this function doesn't even receive here -
+        // only chargeType (per-line, explicit) decides RCM. Proves the two are never coupled: a
+        // line with no chargeType specified always defaults to FORWARD_CHARGE, regardless of the
+        // supplier's registration status.
+        val result = TradingWorkflowEngine.buildPurchase(
+            "V1", companyId, fyId, "LED_CREDITOR", "Unregistered Supplier", "", "LED_PURCHASE", "Purchase",
+            "27", "27", listOf(line("ITEM_A", 1, 1000_00L, 18.0)), gstLedgerRefs(companyId), "LED_RO", "Round Off"
+        )
+        assertEquals(GstChargeType.FORWARD_CHARGE, result.gstTransactions.first().chargeType)
+        assertTrue(result.journalItems.none { it.ledgerId.contains("RCM") })
+    }
+
+    @Test
+    fun h3_Purchase_ExplicitRcmLine_TaxCalculatedViaSameEngine() {
+        val fcLine = line("ITEM_A", 1, 1000_00L, 18.0)
+        val rcmLine = line("ITEM_B", 1, 1000_00L, 18.0).copy(chargeType = GstChargeType.REVERSE_CHARGE)
+        val result = TradingWorkflowEngine.buildPurchase(
+            "V1", companyId, fyId, "LED_CREDITOR", "Supplier", "", "LED_PURCHASE", "Purchase",
+            "27", "27", listOf(fcLine, rcmLine), gstLedgerRefs(companyId), "LED_RO", "Round Off"
+        )
+        val rcmGt = result.gstTransactions.first { it.chargeType == GstChargeType.REVERSE_CHARGE }
+        assertEquals(90_00L, rcmGt.cgst.paise)
+        assertEquals(90_00L, rcmGt.sgst.paise)
+    }
+
+    @Test
+    fun h4_Purchase_IntraStateRcm_PostsCgstAndSgstToRcmLedgers() {
+        val result = TradingWorkflowEngine.buildPurchase(
+            "V1", companyId, fyId, "LED_CREDITOR", "Supplier", "", "LED_PURCHASE", "Purchase",
+            "27", "27",
+            listOf(line("ITEM_A", 1, 1000_00L, 18.0).copy(chargeType = GstChargeType.REVERSE_CHARGE)),
+            gstLedgerRefs(companyId), "LED_RO", "Round Off"
+        )
+        assertTrue(result.journalItems.any { it.ledgerId == "${GstLedgerIds.RCM_INPUT_CGST_LEDGER_ID}_$companyId" && it.type == DrCr.DEBIT })
+        assertTrue(result.journalItems.any { it.ledgerId == "${GstLedgerIds.RCM_LIABILITY_CGST_LEDGER_ID}_$companyId" && it.type == DrCr.CREDIT })
+        assertTrue(result.journalItems.any { it.ledgerId == "${GstLedgerIds.RCM_INPUT_SGST_LEDGER_ID}_$companyId" && it.type == DrCr.DEBIT })
+        assertTrue(result.journalItems.any { it.ledgerId == "${GstLedgerIds.RCM_LIABILITY_SGST_LEDGER_ID}_$companyId" && it.type == DrCr.CREDIT })
+        assertTrue("Intra-state RCM must never post IGST", result.journalItems.none { it.ledgerId.contains("IGST") })
+    }
+
+    @Test
+    fun h5_Purchase_InterStateRcm_PostsIgstToRcmLedgers() {
+        val result = TradingWorkflowEngine.buildPurchase(
+            "V1", companyId, fyId, "LED_CREDITOR", "Supplier", "", "LED_PURCHASE", "Purchase",
+            "27", "09",
+            listOf(line("ITEM_A", 1, 1000_00L, 18.0).copy(chargeType = GstChargeType.REVERSE_CHARGE)),
+            gstLedgerRefs(companyId), "LED_RO", "Round Off"
+        )
+        assertTrue(result.journalItems.any { it.ledgerId == "${GstLedgerIds.RCM_INPUT_IGST_LEDGER_ID}_$companyId" && it.type == DrCr.DEBIT })
+        assertTrue(result.journalItems.any { it.ledgerId == "${GstLedgerIds.RCM_LIABILITY_IGST_LEDGER_ID}_$companyId" && it.type == DrCr.CREDIT })
+        assertTrue("Inter-state RCM must never post CGST/SGST", result.journalItems.none { it.ledgerId.contains("CGST") || it.ledgerId.contains("SGST") })
+    }
+
+    @Test
+    fun h6_Purchase_InvalidRcmCombination_Rejected() {
+        try {
+            TradingWorkflowEngine.buildSale(
+                "V1", companyId, fyId, "LED_DEBTOR", "Cust", "", "LED_SALES", "Sales", "27", "27",
+                listOf(line("ITEM_A", 1, 1000_00L, 18.0).copy(chargeType = GstChargeType.REVERSE_CHARGE)),
+                gstLedgerRefs(companyId), "LED_RO", "Round Off"
+            )
+            fail("Expected rejection of Reverse Charge on a Sale")
+        } catch (e: IllegalArgumentException) { /* expected */ }
+
+        try {
+            TradingWorkflowEngine.buildPurchase(
+                "V1", companyId, fyId, "LED_CREDITOR", "Supplier", "", "LED_PURCHASE", "Purchase", "27", "27",
+                listOf(line("ITEM_A", 1, 1000_00L, 18.0).copy(chargeType = GstChargeType.REVERSE_CHARGE, supplyNature = GstSupplyNature.EXEMPT)),
+                gstLedgerRefs(companyId), "LED_RO", "Round Off"
+            )
+            fail("Expected rejection of Reverse Charge combined with a non-Taxable line")
+        } catch (e: IllegalArgumentException) { /* expected */ }
+    }
+
+    @Test
+    fun h7_Purchase_RcmLiabilityPosting_RemainsBalanced() {
+        val result = TradingWorkflowEngine.buildPurchase(
+            "V1", companyId, fyId, "LED_CREDITOR", "Supplier", "", "LED_PURCHASE", "Purchase", "27", "27",
+            listOf(
+                line("ITEM_A", 1, 1000_00L, 18.0),
+                line("ITEM_B", 1, 500_00L, 18.0).copy(chargeType = GstChargeType.REVERSE_CHARGE)
+            ),
+            gstLedgerRefs(companyId), "LED_RO", "Round Off"
+        )
+        val totalDebit = result.journalItems.filter { it.type == DrCr.DEBIT }.fold(Money.ZERO) { acc, i -> acc + i.amount }
+        val totalCredit = result.journalItems.filter { it.type == DrCr.CREDIT }.fold(Money.ZERO) { acc, i -> acc + i.amount }
+        assertEquals("A Purchase with an RCM line must still balance", totalDebit.paise, totalCredit.paise)
+
+        // Supplier payable must exclude the RCM line's tax - only taxable value (1000+500) plus the
+        // forward-charge line's own tax (180) enters what is owed to the supplier.
+        val supplierLine = result.journalItems.first { it.ledgerId == "LED_CREDITOR" }
+        assertEquals(1500_00L + 180_00L, supplierLine.amount.paise)
+    }
+
+    @Test
+    fun h8_Purchase_ExistingForwardChargeBehavior_Unchanged() {
+        val result = TradingWorkflowEngine.buildPurchase(
+            "V1", companyId, fyId, "LED_CREDITOR", "Supplier", "", "LED_PURCHASE", "Purchase", "27", "27",
+            listOf(line("ITEM_A", 1, 1000_00L, 18.0)), gstLedgerRefs(companyId), "LED_RO", "Round Off"
+        )
+        assertEquals(1180_00L, result.totalAmount.paise)
+        assertTrue(result.journalItems.none { it.ledgerId.contains("RCM") })
+    }
+
+    @Test
+    fun h9_Rule30_SupplierGstRegistrationStatus_RemainsIntact() = runBlocking {
+        // A supplier's gstRegistrationStatus (Rule 30) is a Ledger fact, completely untouched by
+        // Rule 31 - read/written the same way regardless of any purchase's chargeType.
+        val dao = freshDao()
+        dao.seedCompany()
+        val repo = AccountingRepository(dao)
+        val result = repo.createParty(
+            Party(partyId = "", companyId = companyId, ledgerId = "", role = PartyRole.SUPPLIER, entityType = PartyEntityType.BUSINESS, displayName = "RCM Test Supplier"),
+            com.example.accounting.domain.accounting.Ledger(
+                ledgerId = "", companyId = companyId, groupId = "", name = "RCM Test Supplier", stateCode = "27",
+                gstRegistrationStatus = com.example.accounting.domain.accounting.GstRegistrationStatus.UNREGISTERED
+            )
+        )
+        assertTrue(result is com.example.accounting.core.common.AccountingResult.Success)
+        val ledgerId = (result as com.example.accounting.core.common.AccountingResult.Success).data.ledgerId
+        val persisted = dao.getLedgerById(companyId, ledgerId)!!
+        assertEquals("UNREGISTERED", persisted.gstRegistrationStatus)
     }
 }

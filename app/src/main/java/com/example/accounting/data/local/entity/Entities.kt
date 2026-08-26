@@ -27,6 +27,7 @@ import com.example.accounting.domain.rendering.ConstitutionType
 import com.example.accounting.domain.rendering.DocumentAssetType
 import com.example.accounting.domain.rendering.TemplateStatus
 import com.example.accounting.domain.subscription.SubscriptionPlanType
+import com.example.accounting.domain.taxation.gst.GstChargeType
 import com.example.accounting.domain.taxation.gst.GstDirection
 import com.example.accounting.domain.taxation.gst.SupplyType
 
@@ -467,7 +468,11 @@ data class GstTransactionEntity(
     val cessPaise: Long,
     val direction: GstDirection,
     val lineOrder: Int,
-    val createdAt: Long
+    val createdAt: Long,
+    /** Rule 31 (Purchase/RCM Foundation) - see [com.example.accounting.domain.taxation.gst.GstTransaction.chargeType].
+     * Defaults to FORWARD_CHARGE - every pre-existing row (RCM never existed before this) really
+     * was forward-charge, so the migration backfill default is a genuine fact, not a guess. */
+    val chargeType: GstChargeType = GstChargeType.FORWARD_CHARGE
 )
 
 /**

@@ -438,14 +438,14 @@ fun CreateVoucherDialog(
                                 isSaleFlow -> onPostSaleInvoice(
                                     partyLedgerId, tradeLedgerId,
                                     lines.filter { it.itemId.isNotBlank() }.map {
-                                        AccountingViewModel.TradingLineForm(it.itemId, it.quantityInput.toDoubleOrNull() ?: 0.0, Money.parse(it.rateInput.ifBlank { "0" }), it.supplyNature)
+                                        AccountingViewModel.TradingLineForm(it.itemId, it.quantityInput.toDoubleOrNull() ?: 0.0, Money.parse(it.rateInput.ifBlank { "0" }), it.supplyNature, it.chargeType)
                                     },
                                     LocalDate.now(), referenceNumber, narration
                                 )
                                 isPurchaseFlow -> onPostPurchaseBill(
                                     partyLedgerId, tradeLedgerId,
                                     lines.filter { it.itemId.isNotBlank() }.map {
-                                        AccountingViewModel.TradingLineForm(it.itemId, it.quantityInput.toDoubleOrNull() ?: 0.0, Money.parse(it.rateInput.ifBlank { "0" }), it.supplyNature)
+                                        AccountingViewModel.TradingLineForm(it.itemId, it.quantityInput.toDoubleOrNull() ?: 0.0, Money.parse(it.rateInput.ifBlank { "0" }), it.supplyNature, it.chargeType)
                                     },
                                     LocalDate.now(), referenceNumber, narration
                                 )

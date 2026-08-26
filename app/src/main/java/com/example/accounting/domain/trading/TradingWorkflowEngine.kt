@@ -9,6 +9,7 @@ import com.example.accounting.domain.accounting.VoucherType
 import com.example.accounting.domain.inventory.StockDirection
 import com.example.accounting.domain.inventory.VoucherStockLine
 import com.example.accounting.domain.taxation.gst.GstCalculationEngine
+import com.example.accounting.domain.taxation.gst.GstChargeType
 import com.example.accounting.domain.taxation.gst.GstDirection
 import com.example.accounting.domain.taxation.gst.GstSupplyNature
 import com.example.accounting.domain.taxation.gst.GstTransaction
@@ -41,7 +42,18 @@ data class TradingLineInput(
     /** Tax Treatment (UI-06) - defaults to NORMAL (Taxable), i.e. byte-identical behavior to
      * before this field existed: geography (company vs place-of-supply) still decides Intra/Inter.
      * EXPORT/EXEMPT/NIL_RATED bypass geography entirely via [GstCalculationEngine.calculateDetailed]. */
-    val supplyNature: GstSupplyNature = GstSupplyNature.NORMAL
+    val supplyNature: GstSupplyNature = GstSupplyNature.NORMAL,
+    /**
+     * Rule 31 (Purchase/RCM Foundation) - who is liable to remit this line's tax. Lives here, per
+     * line, deliberately never on the supplier [com.example.accounting.domain.accounting.Ledger] -
+     * RCM is a fact about a specific supply, not a permanent property of who you bought it from.
+     * [com.example.accounting.domain.accounting.Ledger.gstRegistrationStatus] is never read to set
+     * this; a user must explicitly choose REVERSE_CHARGE. Defaults to FORWARD_CHARGE, i.e.
+     * byte-identical behavior to before this field existed. Only meaningful on a Purchase line
+     * (`build()` rejects it on a Sale) and only combinable with [GstSupplyNature.NORMAL] - there is
+     * no tax to reverse-charge on a zero-tax supply.
+     */
+    val chargeType: GstChargeType = GstChargeType.FORWARD_CHARGE
 )
 
 /** A resolved ledger reference (companyId-suffixed id + display name) - supplied by the caller
@@ -51,7 +63,12 @@ data class LedgerRef(val ledgerId: String, val name: String)
 data class TradingGstLedgers(
     val outputCgst: LedgerRef, val outputSgst: LedgerRef, val outputIgst: LedgerRef,
     val inputCgst: LedgerRef, val inputSgst: LedgerRef, val inputIgst: LedgerRef,
-    val cess: LedgerRef
+    val cess: LedgerRef,
+    /** Rule 31 (Purchase/RCM Foundation) - deliberately separate ledgers from [inputCgst]/etc.
+     * (ordinary forward-charge Input Tax Credit) and from the supplier payable ledger. See
+     * [com.example.accounting.domain.taxation.gst.GstLedgerIds] for the full rationale. */
+    val rcmLiabilityCgst: LedgerRef, val rcmLiabilitySgst: LedgerRef, val rcmLiabilityIgst: LedgerRef,
+    val rcmInputCgst: LedgerRef, val rcmInputSgst: LedgerRef, val rcmInputIgst: LedgerRef
 )
 
 data class TradingWorkflowResult(
@@ -179,6 +196,18 @@ object TradingWorkflowEngine {
         roundOffLedgerId: String, roundOffLedgerName: String
     ): TradingWorkflowResult {
         require(lines.isNotEmpty()) { "At least one line item is required." }
+        // Rule 31 (Purchase/RCM Foundation): authoritative backstops, matching the
+        // lines.isNotEmpty() convention above. The real, graceful, user-facing check is
+        // AccountingViewModel.postTradingDocument's pre-check (never reached in normal use); these
+        // exist so any other caller of this pure engine can never silently produce a wrong posting.
+        if (isSale) {
+            require(lines.none { it.chargeType == GstChargeType.REVERSE_CHARGE }) {
+                "Reverse charge is not applicable to a Sale."
+            }
+        }
+        require(lines.none { it.chargeType == GstChargeType.REVERSE_CHARGE && it.supplyNature != GstSupplyNature.NORMAL }) {
+            "Reverse charge requires a Taxable line - it cannot be combined with Zero Rated/Exempt/Nil Rated."
+        }
 
         val direction = if (isSale) GstDirection.OUTPUT else GstDirection.INPUT
         val taxLineType = if (isSale) DrCr.CREDIT else DrCr.DEBIT
@@ -188,10 +217,17 @@ object TradingWorkflowEngine {
         val voucherType = if (isSale) VoucherType.SALES else VoucherType.PURCHASE
 
         var taxableTotal = Money.ZERO
+        // Forward-charge tax only - what the supplier actually bills, and what the ordinary
+        // Input/Output duty ledgers receive, exactly as before Rule 31.
         var cgstTotal = Money.ZERO
         var sgstTotal = Money.ZERO
         var igstTotal = Money.ZERO
         var cessTotal = Money.ZERO
+        // Rule 31 (Purchase/RCM Foundation): reverse-charge tax, self-assessed by the recipient -
+        // never billed by the supplier, never mixed into the forward-charge totals above.
+        var rcmCgstTotal = Money.ZERO
+        var rcmSgstTotal = Money.ZERO
+        var rcmIgstTotal = Money.ZERO
         var resolvedSupplyType = SupplyType.INTRA_STATE
 
         val stockLines = mutableListOf<VoucherStockLine>()
@@ -220,10 +256,19 @@ object TradingWorkflowEngine {
             // for it would simply vanish, unbalancing the voucher).
             if (line.supplyNature == GstSupplyNature.NORMAL) resolvedSupplyType = breakdown.supplyType
             taxableTotal += breakdown.taxableAmount
-            cgstTotal += breakdown.cgstAmount
-            sgstTotal += breakdown.sgstAmount
-            igstTotal += breakdown.igstAmount
             cessTotal += breakdown.cessAmount
+
+            // Rule 31: route this line's tax into the forward-charge or RCM bucket - the tax
+            // amount itself came from the exact same calculateDetailed() call either way.
+            if (line.chargeType == GstChargeType.REVERSE_CHARGE) {
+                rcmCgstTotal += breakdown.cgstAmount
+                rcmSgstTotal += breakdown.sgstAmount
+                rcmIgstTotal += breakdown.igstAmount
+            } else {
+                cgstTotal += breakdown.cgstAmount
+                sgstTotal += breakdown.sgstAmount
+                igstTotal += breakdown.igstAmount
+            }
 
             stockLines += VoucherStockLine(
                 lineId = UUID.randomUUID().toString(), voucherId = voucherId, companyId = companyId,
@@ -239,10 +284,14 @@ object TradingWorkflowEngine {
                 supplyType = breakdown.supplyType, itemId = line.itemId, hsnSacCode = line.hsnSacCode,
                 quantity = line.quantity, taxableAmount = breakdown.taxableAmount, gstRatePercent = line.gstRatePercent,
                 cgst = breakdown.cgstAmount, sgst = breakdown.sgstAmount, igst = breakdown.igstAmount, cess = breakdown.cessAmount,
-                direction = direction, lineOrder = index + 1
+                direction = direction, lineOrder = index + 1, chargeType = line.chargeType
             )
         }
 
+        // Rule 31: the amount owed to the party excludes reverse-charge tax entirely - the
+        // supplier never billed it, so it is never part of what the recipient owes them. Only
+        // taxable value + forward-charge tax + cess enters the invoice total/Round Off, exactly as
+        // before RCM existed.
         val rawTotal = taxableTotal + cgstTotal + sgstTotal + igstTotal + cessTotal
         val roundOff = RoundOffEngine.roundInvoiceTotal(rawTotal)
 
@@ -262,12 +311,12 @@ object TradingWorkflowEngine {
             narration = if (isSale) "Taxable sales revenue" else "Taxable purchase value", lineOrder = order++
         )
 
-        fun taxLine(ref: LedgerRef, amount: Money, label: String) {
+        fun taxLine(ref: LedgerRef, amount: Money, type: DrCr, label: String) {
             if (amount.isPositive) {
                 journalItems += JournalItem(
                     itemId = UUID.randomUUID().toString(), voucherId = voucherId, companyId = companyId,
                     financialYearId = financialYearId, ledgerId = ref.ledgerId, ledgerName = ref.name,
-                    type = taxLineType, amount = amount, narration = label, lineOrder = order++
+                    type = type, amount = amount, narration = label, lineOrder = order++
                 )
             }
         }
@@ -275,15 +324,34 @@ object TradingWorkflowEngine {
         val directionLabel = if (isSale) "Output" else "Input"
         when (resolvedSupplyType) {
             SupplyType.INTRA_STATE -> {
-                taxLine(if (isSale) gstLedgers.outputCgst else gstLedgers.inputCgst, cgstTotal, "$directionLabel CGST")
-                taxLine(if (isSale) gstLedgers.outputSgst else gstLedgers.inputSgst, sgstTotal, "$directionLabel SGST")
+                taxLine(if (isSale) gstLedgers.outputCgst else gstLedgers.inputCgst, cgstTotal, taxLineType, "$directionLabel CGST")
+                taxLine(if (isSale) gstLedgers.outputSgst else gstLedgers.inputSgst, sgstTotal, taxLineType, "$directionLabel SGST")
             }
             SupplyType.INTER_STATE -> {
-                taxLine(if (isSale) gstLedgers.outputIgst else gstLedgers.inputIgst, igstTotal, "$directionLabel IGST")
+                taxLine(if (isSale) gstLedgers.outputIgst else gstLedgers.inputIgst, igstTotal, taxLineType, "$directionLabel IGST")
             }
             SupplyType.EXPORT, SupplyType.EXEMPT -> { /* zero-rated/exempt: nothing to post */ }
         }
-        taxLine(gstLedgers.cess, cessTotal, "CESS")
+        taxLine(gstLedgers.cess, cessTotal, taxLineType, "CESS")
+
+        // Rule 31 (Purchase/RCM Foundation): the reverse-charge pair is fully self-balancing (the
+        // exact same amount posted to both sides) - it never needs Round Off and never touches the
+        // supplier-payable line. Uses the same resolvedSupplyType already resolved above, since RCM
+        // is only ever valid on a NORMAL-nature line (enforced by the require() above), and a
+        // NORMAL line's geography-derived supply type is shared across the whole invoice.
+        when (resolvedSupplyType) {
+            SupplyType.INTRA_STATE -> {
+                taxLine(gstLedgers.rcmInputCgst, rcmCgstTotal, DrCr.DEBIT, "RCM Input CGST")
+                taxLine(gstLedgers.rcmLiabilityCgst, rcmCgstTotal, DrCr.CREDIT, "RCM Liability CGST")
+                taxLine(gstLedgers.rcmInputSgst, rcmSgstTotal, DrCr.DEBIT, "RCM Input SGST")
+                taxLine(gstLedgers.rcmLiabilitySgst, rcmSgstTotal, DrCr.CREDIT, "RCM Liability SGST")
+            }
+            SupplyType.INTER_STATE -> {
+                taxLine(gstLedgers.rcmInputIgst, rcmIgstTotal, DrCr.DEBIT, "RCM Input IGST")
+                taxLine(gstLedgers.rcmLiabilityIgst, rcmIgstTotal, DrCr.CREDIT, "RCM Liability IGST")
+            }
+            SupplyType.EXPORT, SupplyType.EXEMPT -> { /* RCM never applies here - the rcm totals are zero (require() above enforces NORMAL nature) */ }
+        }
 
         // Round Off (Priority 7): the party line already carries the rounded total while the
         // trade+tax lines sum to the raw total, so whichever side is now short needs the
