@@ -1288,4 +1288,297 @@ class Phase5TestSuite {
         val persisted = dao.getLedgerById(companyId, ledgerId)!!
         assertEquals("UNREGISTERED", persisted.gstRegistrationStatus)
     }
+
+    // ==========================================
+    // I. PURCHASE / RCM ACCOUNTING POSTING (Rule 32)
+    // ==========================================
+    // Rule 31's h-series tests only exercise the pure TradingWorkflowEngine.build() calculation -
+    // none of them actually post through VoucherPostingEngine/real ledger balance updates/GST
+    // transaction persistence. These i-series tests close that gap using the exact same
+    // postResult()/VoucherPostingEngine.post() pattern this class already uses for every other
+    // voucher type - no new posting engine, no new GST engine, reuse only.
+
+    private fun purchaseGstSetup(): Pair<AccountingDao, AccountingRepository> {
+        val dao = freshDao()
+        runBlocking {
+            dao.seedCompany()
+            dao.seedTradingLedgers()
+            // Opening quantity > 0 (raw value - Quantity's scale is x1000, so 100_000L = 100 real
+            // units) so the i11 Sale scenario (stock OUT) has enough to sell - irrelevant to the
+            // Purchase scenarios (stock IN), which never check availability.
+            dao.insertStockItems(listOf(stockItem("ITEM_A", openingQty = 100_000L), stockItem("ITEM_B", openingQty = 100_000L)))
+        }
+        val repo = AccountingRepository(dao)
+        return dao to repo
+    }
+
+    @Test
+    fun i1_Purchase_RemainsBalanced_AfterRealPosting() = runBlocking {
+        val (dao, repo) = purchaseGstSetup()
+        repo.ensureGstLedgersExist(companyId)
+        val gstLedgers = repo.resolveGstLedgerRefs(companyId)
+        val roundOffId = "${StandardSystemGroups.ROUND_OFF_LEDGER_ID}_$companyId"
+
+        val result = TradingWorkflowEngine.buildPurchase(
+            "V_I1", companyId, fyId, "LED_CREDITOR", "Supplier", "", "LED_PURCHASE", "Purchase", "27", "27",
+            listOf(line("ITEM_A", 1, 1000_00L, 18.0)), gstLedgers, roundOffId, "Round Off"
+        )
+        postResult(dao, "V_I1", VoucherType.PURCHASE, result)
+
+        val items = dao.getJournalItemsForVoucherSync("V_I1")
+        val debit = items.filter { it.type == DrCr.DEBIT }.fold(0L) { acc, i -> acc + i.amountPaise }
+        val credit = items.filter { it.type == DrCr.CREDIT }.fold(0L) { acc, i -> acc + i.amountPaise }
+        assertEquals("An ordinary posted Purchase must balance", debit, credit)
+    }
+
+    @Test
+    fun i2_RegisteredSupplier_ForwardCharge_PostsCorrectly() = runBlocking {
+        val (dao, repo) = purchaseGstSetup()
+        repo.ensureGstLedgersExist(companyId)
+        val gstLedgers = repo.resolveGstLedgerRefs(companyId)
+        val roundOffId = "${StandardSystemGroups.ROUND_OFF_LEDGER_ID}_$companyId"
+
+        val result = TradingWorkflowEngine.buildPurchase(
+            "V_I2", companyId, fyId, "LED_CREDITOR", "Supplier", "27AAAAA0000A1Z5", "LED_PURCHASE", "Purchase",
+            "27", "27", listOf(line("ITEM_A", 1, 1000_00L, 18.0)), gstLedgers, roundOffId, "Round Off"
+        )
+        postResult(dao, "V_I2", VoucherType.PURCHASE, result)
+
+        val inputCgst = dao.getLedgerById(companyId, "${GstLedgerIds.INPUT_CGST_LEDGER_ID}_$companyId")!!
+        val inputSgst = dao.getLedgerById(companyId, "${GstLedgerIds.INPUT_SGST_LEDGER_ID}_$companyId")!!
+        assertEquals(90_00L, inputCgst.currentBalancePaise)
+        assertEquals(90_00L, inputSgst.currentBalancePaise)
+        assertEquals(DrCr.DEBIT, inputCgst.currentBalanceType)
+    }
+
+    @Test
+    fun i3_IntraStatePurchase_PostsCgstSgst_NeverIgst() = runBlocking {
+        val (dao, repo) = purchaseGstSetup()
+        repo.ensureGstLedgersExist(companyId)
+        val gstLedgers = repo.resolveGstLedgerRefs(companyId)
+        val roundOffId = "${StandardSystemGroups.ROUND_OFF_LEDGER_ID}_$companyId"
+
+        val result = TradingWorkflowEngine.buildPurchase(
+            "V_I3", companyId, fyId, "LED_CREDITOR", "Supplier", "", "LED_PURCHASE", "Purchase",
+            "27", "27", listOf(line("ITEM_A", 1, 1000_00L, 18.0)), gstLedgers, roundOffId, "Round Off"
+        )
+        postResult(dao, "V_I3", VoucherType.PURCHASE, result)
+
+        assertEquals(90_00L, dao.getLedgerById(companyId, "${GstLedgerIds.INPUT_CGST_LEDGER_ID}_$companyId")!!.currentBalancePaise)
+        assertEquals(90_00L, dao.getLedgerById(companyId, "${GstLedgerIds.INPUT_SGST_LEDGER_ID}_$companyId")!!.currentBalancePaise)
+        assertEquals(0L, dao.getLedgerById(companyId, "${GstLedgerIds.INPUT_IGST_LEDGER_ID}_$companyId")!!.currentBalancePaise)
+    }
+
+    @Test
+    fun i4_InterStatePurchase_PostsIgst_NeverCgstSgst() = runBlocking {
+        val (dao, repo) = purchaseGstSetup()
+        repo.ensureGstLedgersExist(companyId)
+        val gstLedgers = repo.resolveGstLedgerRefs(companyId)
+        val roundOffId = "${StandardSystemGroups.ROUND_OFF_LEDGER_ID}_$companyId"
+
+        val result = TradingWorkflowEngine.buildPurchase(
+            "V_I4", companyId, fyId, "LED_CREDITOR", "Supplier", "", "LED_PURCHASE", "Purchase",
+            "27", "09", listOf(line("ITEM_A", 1, 1000_00L, 18.0)), gstLedgers, roundOffId, "Round Off"
+        )
+        postResult(dao, "V_I4", VoucherType.PURCHASE, result)
+
+        assertEquals(180_00L, dao.getLedgerById(companyId, "${GstLedgerIds.INPUT_IGST_LEDGER_ID}_$companyId")!!.currentBalancePaise)
+        assertEquals(0L, dao.getLedgerById(companyId, "${GstLedgerIds.INPUT_CGST_LEDGER_ID}_$companyId")!!.currentBalancePaise)
+        assertEquals(0L, dao.getLedgerById(companyId, "${GstLedgerIds.INPUT_SGST_LEDGER_ID}_$companyId")!!.currentBalancePaise)
+    }
+
+    @Test
+    fun i5_ExplicitRcm_PostsRcmLiabilityAndInputTax_Correctly() = runBlocking {
+        val (dao, repo) = purchaseGstSetup()
+        repo.ensureGstLedgersExist(companyId)
+        val gstLedgers = repo.resolveGstLedgerRefs(companyId)
+        val roundOffId = "${StandardSystemGroups.ROUND_OFF_LEDGER_ID}_$companyId"
+
+        val result = TradingWorkflowEngine.buildPurchase(
+            "V_I5", companyId, fyId, "LED_CREDITOR", "Supplier", "", "LED_PURCHASE", "Purchase", "27", "27",
+            listOf(line("ITEM_A", 1, 1000_00L, 18.0).copy(chargeType = GstChargeType.REVERSE_CHARGE)),
+            gstLedgers, roundOffId, "Round Off"
+        )
+        postResult(dao, "V_I5", VoucherType.PURCHASE, result)
+
+        val rcmInputCgst = dao.getLedgerById(companyId, "${GstLedgerIds.RCM_INPUT_CGST_LEDGER_ID}_$companyId")!!
+        val rcmLiabilityCgst = dao.getLedgerById(companyId, "${GstLedgerIds.RCM_LIABILITY_CGST_LEDGER_ID}_$companyId")!!
+        assertEquals(90_00L, rcmInputCgst.currentBalancePaise)
+        assertEquals(DrCr.DEBIT, rcmInputCgst.currentBalanceType)
+        assertEquals(90_00L, rcmLiabilityCgst.currentBalancePaise)
+        assertEquals(DrCr.CREDIT, rcmLiabilityCgst.currentBalanceType)
+        // Ordinary Input CGST (forward-charge) must remain untouched by an all-RCM Purchase.
+        assertEquals(0L, dao.getLedgerById(companyId, "${GstLedgerIds.INPUT_CGST_LEDGER_ID}_$companyId")!!.currentBalancePaise)
+    }
+
+    @Test
+    fun i6_RcmTax_DoesNotIncreaseSupplierPayable_AfterRealPosting() = runBlocking {
+        val (dao, repo) = purchaseGstSetup()
+        repo.ensureGstLedgersExist(companyId)
+        val gstLedgers = repo.resolveGstLedgerRefs(companyId)
+        val roundOffId = "${StandardSystemGroups.ROUND_OFF_LEDGER_ID}_$companyId"
+
+        val result = TradingWorkflowEngine.buildPurchase(
+            "V_I6", companyId, fyId, "LED_CREDITOR", "Supplier", "", "LED_PURCHASE", "Purchase", "27", "27",
+            listOf(line("ITEM_A", 1, 1000_00L, 18.0).copy(chargeType = GstChargeType.REVERSE_CHARGE)),
+            gstLedgers, roundOffId, "Round Off"
+        )
+        postResult(dao, "V_I6", VoucherType.PURCHASE, result)
+
+        // Supplier owes only the taxable value (1000) - the self-assessed RCM tax (180) never
+        // becomes part of what is payable to them.
+        val supplier = dao.getLedgerById(companyId, "LED_CREDITOR")!!
+        assertEquals(1000_00L, supplier.currentBalancePaise)
+        assertEquals(DrCr.CREDIT, supplier.currentBalanceType)
+    }
+
+    @Test
+    fun i7_RoundOff_RemainsCorrect_WithRcmLinePresent() = runBlocking {
+        val (dao, repo) = purchaseGstSetup()
+        repo.ensureGstLedgersExist(companyId)
+        val gstLedgers = repo.resolveGstLedgerRefs(companyId)
+        val roundOffId = "${StandardSystemGroups.ROUND_OFF_LEDGER_ID}_$companyId"
+
+        // Same round-off-triggering rate as e4, plus one Reverse Charge line.
+        val result = TradingWorkflowEngine.buildPurchase(
+            "V_I7", companyId, fyId, "LED_CREDITOR", "Supplier", "", "LED_PURCHASE", "Purchase", "27", "27",
+            listOf(
+                line("ITEM_A", 3, 333_00L, 18.0),
+                line("ITEM_B", 1, 500_00L, 18.0).copy(chargeType = GstChargeType.REVERSE_CHARGE)
+            ),
+            gstLedgers, roundOffId, "Round Off"
+        )
+        val expectedRoundOffItem = result.journalItems.find { it.ledgerId == roundOffId }
+        val roundOffBefore = dao.getLedgerById(companyId, roundOffId)!!.currentBalancePaise
+
+        postResult(dao, "V_I7", VoucherType.PURCHASE, result)
+
+        val roundOffAfter = dao.getLedgerById(companyId, roundOffId)!!.currentBalancePaise
+        if (expectedRoundOffItem != null) {
+            assertEquals(
+                "The amount actually posted to the Round Off ledger must match what build() computed",
+                expectedRoundOffItem.amount.paise, kotlin.math.abs(roundOffAfter - roundOffBefore)
+            )
+        }
+
+        val items = dao.getJournalItemsForVoucherSync("V_I7")
+        val debit = items.filter { it.type == DrCr.DEBIT }.fold(0L) { acc, i -> acc + i.amountPaise }
+        val credit = items.filter { it.type == DrCr.CREDIT }.fold(0L) { acc, i -> acc + i.amountPaise }
+        assertEquals("Posted voucher must balance even when Round Off and an RCM line both apply", debit, credit)
+    }
+
+    @Test
+    fun i8_MixedForwardAndRcmLines_EveryPostedVoucher_DebitEqualsCredit() = runBlocking {
+        val (dao, repo) = purchaseGstSetup()
+        repo.ensureGstLedgersExist(companyId)
+        val gstLedgers = repo.resolveGstLedgerRefs(companyId)
+        val roundOffId = "${StandardSystemGroups.ROUND_OFF_LEDGER_ID}_$companyId"
+
+        val result = TradingWorkflowEngine.buildPurchase(
+            "V_I8", companyId, fyId, "LED_CREDITOR", "Supplier", "", "LED_PURCHASE", "Purchase", "27", "09",
+            listOf(
+                line("ITEM_A", 1, 1000_00L, 18.0),
+                line("ITEM_B", 1, 500_00L, 18.0).copy(chargeType = GstChargeType.REVERSE_CHARGE)
+            ),
+            gstLedgers, roundOffId, "Round Off"
+        )
+        postResult(dao, "V_I8", VoucherType.PURCHASE, result)
+
+        val items = dao.getJournalItemsForVoucherSync("V_I8")
+        val debit = items.filter { it.type == DrCr.DEBIT }.fold(0L) { acc, i -> acc + i.amountPaise }
+        val credit = items.filter { it.type == DrCr.CREDIT }.fold(0L) { acc, i -> acc + i.amountPaise }
+        assertEquals(debit, credit)
+    }
+
+    @Test
+    fun i9_GstTransactionPersistence_MatchesPostedVoucher() = runBlocking {
+        val (dao, repo) = purchaseGstSetup()
+        repo.ensureGstLedgersExist(companyId)
+        val gstLedgers = repo.resolveGstLedgerRefs(companyId)
+        val roundOffId = "${StandardSystemGroups.ROUND_OFF_LEDGER_ID}_$companyId"
+
+        val result = TradingWorkflowEngine.buildPurchase(
+            "V_I9", companyId, fyId, "LED_CREDITOR", "Supplier", "", "LED_PURCHASE", "Purchase", "27", "27",
+            listOf(line("ITEM_A", 1, 1000_00L, 18.0)), gstLedgers, roundOffId, "Round Off"
+        )
+        postResult(dao, "V_I9", VoucherType.PURCHASE, result)
+
+        val persisted = dao.getGstTransactionsForVoucher("V_I9")
+        assertEquals(1, persisted.size)
+        assertEquals(result.gstTransactions.first().cgst.paise, persisted.first().cgstPaise)
+        assertEquals(result.gstTransactions.first().sgst.paise, persisted.first().sgstPaise)
+        assertEquals(result.gstTransactions.first().taxableAmount.paise, persisted.first().taxableAmountPaise)
+        assertEquals(GstChargeType.FORWARD_CHARGE, persisted.first().chargeType)
+    }
+
+    @Test
+    fun i10_ForwardAndReverseCharge_RemainDistinguishable_AfterPersistence() = runBlocking {
+        val (dao, repo) = purchaseGstSetup()
+        repo.ensureGstLedgersExist(companyId)
+        val gstLedgers = repo.resolveGstLedgerRefs(companyId)
+        val roundOffId = "${StandardSystemGroups.ROUND_OFF_LEDGER_ID}_$companyId"
+
+        val result = TradingWorkflowEngine.buildPurchase(
+            "V_I10", companyId, fyId, "LED_CREDITOR", "Supplier", "", "LED_PURCHASE", "Purchase", "27", "27",
+            listOf(
+                line("ITEM_A", 1, 1000_00L, 18.0),
+                line("ITEM_B", 1, 500_00L, 18.0).copy(chargeType = GstChargeType.REVERSE_CHARGE)
+            ),
+            gstLedgers, roundOffId, "Round Off"
+        )
+        postResult(dao, "V_I10", VoucherType.PURCHASE, result)
+
+        val persisted = dao.getGstTransactionsForVoucher("V_I10")
+        assertEquals(2, persisted.size)
+        assertEquals(1, persisted.count { it.chargeType == GstChargeType.FORWARD_CHARGE })
+        assertEquals(1, persisted.count { it.chargeType == GstChargeType.REVERSE_CHARGE })
+    }
+
+    @Test
+    fun i11_ExistingSalesBehavior_UnchangedByRcmAdditions() = runBlocking {
+        val (dao, repo) = purchaseGstSetup()
+        repo.ensureGstLedgersExist(companyId)
+        val gstLedgers = repo.resolveGstLedgerRefs(companyId)
+        val roundOffId = "${StandardSystemGroups.ROUND_OFF_LEDGER_ID}_$companyId"
+
+        val result = TradingWorkflowEngine.buildSale(
+            "V_I11", companyId, fyId, "LED_DEBTOR", "Cust", "", "LED_SALES", "Sales", "27", "27",
+            listOf(line("ITEM_A", 1, 1000_00L, 18.0)), gstLedgers, roundOffId, "Round Off"
+        )
+        postResult(dao, "V_I11", VoucherType.SALES, result)
+
+        assertEquals(90_00L, dao.getLedgerById(companyId, "${GstLedgerIds.OUTPUT_CGST_LEDGER_ID}_$companyId")!!.currentBalancePaise)
+        assertEquals(90_00L, dao.getLedgerById(companyId, "${GstLedgerIds.OUTPUT_SGST_LEDGER_ID}_$companyId")!!.currentBalancePaise)
+        // No RCM ledger is ever touched by an ordinary Sale.
+        assertEquals(0L, dao.getLedgerById(companyId, "${GstLedgerIds.RCM_INPUT_CGST_LEDGER_ID}_$companyId")!!.currentBalancePaise)
+        assertEquals(0L, dao.getLedgerById(companyId, "${GstLedgerIds.RCM_LIABILITY_CGST_LEDGER_ID}_$companyId")!!.currentBalancePaise)
+    }
+
+    @Test
+    fun i12_Rule30_SupplierGstRegistrationStatus_UnchangedByPurchasePosting() = runBlocking {
+        val (dao, repo) = purchaseGstSetup()
+        repo.ensureGstLedgersExist(companyId)
+        val gstLedgers = repo.resolveGstLedgerRefs(companyId)
+        val roundOffId = "${StandardSystemGroups.ROUND_OFF_LEDGER_ID}_$companyId"
+
+        val partyResult = repo.createParty(
+            Party(partyId = "", companyId = companyId, ledgerId = "", role = PartyRole.SUPPLIER, entityType = PartyEntityType.BUSINESS, displayName = "RCM Posting Supplier"),
+            com.example.accounting.domain.accounting.Ledger(
+                ledgerId = "", companyId = companyId, groupId = "", name = "RCM Posting Supplier", stateCode = "27", gstin = "27AAAAA0000A1Z5",
+                gstRegistrationStatus = com.example.accounting.domain.accounting.GstRegistrationStatus.REGISTERED
+            )
+        )
+        assertTrue(partyResult is com.example.accounting.core.common.AccountingResult.Success)
+        val supplierLedgerId = (partyResult as com.example.accounting.core.common.AccountingResult.Success).data.ledgerId
+
+        val result = TradingWorkflowEngine.buildPurchase(
+            "V_I12", companyId, fyId, supplierLedgerId, "RCM Posting Supplier", "27AAAAA0000A1Z5", "LED_PURCHASE", "Purchase", "27", "27",
+            listOf(line("ITEM_A", 1, 1000_00L, 18.0).copy(chargeType = GstChargeType.REVERSE_CHARGE)),
+            gstLedgers, roundOffId, "Round Off"
+        )
+        postResult(dao, "V_I12", VoucherType.PURCHASE, result)
+
+        val persistedSupplier = dao.getLedgerById(companyId, supplierLedgerId)!!
+        assertEquals("REGISTERED", persistedSupplier.gstRegistrationStatus)
+    }
 }

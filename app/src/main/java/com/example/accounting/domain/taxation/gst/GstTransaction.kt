@@ -37,5 +37,13 @@ data class GstTransaction(
     /** Rule 31 (Purchase/RCM Foundation) - who is liable to remit this line's tax. Defaults to
      * FORWARD_CHARGE so every pre-existing construction site (buildGstOnlySale, buildNote's
      * `.copy()`, tests) keeps compiling and behaving identically. */
-    val chargeType: GstChargeType = GstChargeType.FORWARD_CHARGE
+    val chargeType: GstChargeType = GstChargeType.FORWARD_CHARGE,
+    /** Rule 33 (GST Reporting Foundation) - the legal nature of this line's supply, carried through
+     * unchanged from [com.example.accounting.domain.trading.TradingLineInput.supplyNature] instead
+     * of being discarded after [supplyType] is derived from it. Needed because [supplyType] alone
+     * cannot distinguish [GstSupplyNature.EXEMPT] from [GstSupplyNature.NIL_RATED] - both resolve to
+     * the same [SupplyType.EXEMPT] - and GST reporting must classify Taxable/Zero-Rated/Exempt/
+     * Nil-Rated separately. Defaults to NORMAL so every pre-existing construction site (buildNote's
+     * `.copy()`, tests) keeps compiling and behaving identically. */
+    val supplyNature: GstSupplyNature = GstSupplyNature.NORMAL
 )

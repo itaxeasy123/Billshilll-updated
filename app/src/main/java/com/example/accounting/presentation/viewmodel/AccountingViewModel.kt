@@ -220,6 +220,7 @@ class AccountingViewModel(application: Application) : AndroidViewModel(applicati
 
     private var companyDataJob: Job? = null
     private var fyDataJob: Job? = null
+    private var reportsRefreshJob: Job? = null
 
     init {
         // No auto-seeded default company (removed - see AccountingRepository.seedInitialDataForCompany's
@@ -1155,7 +1156,13 @@ class AccountingViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     fun refreshFinancialReports() {
-        viewModelScope.launch {
+        // The ledgers and vouchers Flow collectors in observeCompanyData/observeFinancialYearData
+        // both call this whenever their table changes, and posting a voucher changes both tables
+        // in the same transaction - so two independent, concurrently-launched reads of this
+        // (mid-flight against different snapshots) could otherwise race. Cancelling any in-flight
+        // refresh before launching a new one collapses a burst of triggers to just the last one.
+        reportsRefreshJob?.cancel()
+        reportsRefreshJob = viewModelScope.launch {
             val compId = _uiState.value.currentCompany?.companyId ?: return@launch
             val fyId = _uiState.value.currentFinancialYear?.financialYearId ?: return@launch
 

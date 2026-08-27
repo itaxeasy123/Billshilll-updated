@@ -29,6 +29,7 @@ import com.example.accounting.domain.rendering.TemplateStatus
 import com.example.accounting.domain.subscription.SubscriptionPlanType
 import com.example.accounting.domain.taxation.gst.GstChargeType
 import com.example.accounting.domain.taxation.gst.GstDirection
+import com.example.accounting.domain.taxation.gst.GstSupplyNature
 import com.example.accounting.domain.taxation.gst.SupplyType
 
 @Entity(tableName = "companies")
@@ -472,7 +473,12 @@ data class GstTransactionEntity(
     /** Rule 31 (Purchase/RCM Foundation) - see [com.example.accounting.domain.taxation.gst.GstTransaction.chargeType].
      * Defaults to FORWARD_CHARGE - every pre-existing row (RCM never existed before this) really
      * was forward-charge, so the migration backfill default is a genuine fact, not a guess. */
-    val chargeType: GstChargeType = GstChargeType.FORWARD_CHARGE
+    val chargeType: GstChargeType = GstChargeType.FORWARD_CHARGE,
+    /** Rule 33 (GST Reporting Foundation) - see [com.example.accounting.domain.taxation.gst.GstTransaction.supplyNature].
+     * Defaults to NORMAL; the migration backfill derives the real value from the already-persisted
+     * [supplyType] where possible (EXPORT->EXPORT, EXEMPT->EXEMPT, INTRA/INTER_STATE->NORMAL) - only
+     * a pre-existing EXEMPT row's Exempt-vs-Nil-Rated distinction is unrecoverable. */
+    val supplyNature: GstSupplyNature = GstSupplyNature.NORMAL
 )
 
 /**
