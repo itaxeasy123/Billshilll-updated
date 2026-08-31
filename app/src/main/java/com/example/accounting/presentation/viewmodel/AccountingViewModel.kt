@@ -68,6 +68,7 @@ import com.example.accounting.domain.reports.OutstandingReport
 import com.example.accounting.domain.reports.ProfitAndLossReport
 import com.example.accounting.domain.reports.RatioAnalysisReport
 import com.example.accounting.domain.reports.TrialBalanceReport
+import com.example.accounting.domain.reports.toPdfData
 import com.example.accounting.domain.rendering.BusinessProfile
 import com.example.accounting.domain.rendering.DocumentAssetType
 import com.example.accounting.domain.rendering.IndividualProfile
@@ -81,6 +82,16 @@ import com.example.accounting.domain.taxation.gst.GstFilingPeriod
 import com.example.accounting.domain.taxation.gst.GstLedgerIds
 import com.example.accounting.domain.taxation.gst.GstSupplyNature
 import com.example.accounting.domain.taxation.gst.SupplyType
+import com.example.accounting.application.gstreturn.GstReturnManagementService
+import com.example.accounting.domain.taxation.gstreturn.GstFilingMode
+import com.example.accounting.domain.taxation.gstreturn.GstPeriod
+import com.example.accounting.domain.taxation.gstreturn.GstQuarter
+import com.example.accounting.domain.taxation.gstreturn.GstReturn
+import com.example.accounting.domain.taxation.gstreturn.GstReturnArtifact
+import com.example.accounting.domain.taxation.gstreturn.GstReturnPeriodicity
+import com.example.accounting.domain.taxation.gstreturn.GstReturnSection
+import com.example.accounting.domain.taxation.gstreturn.GstReturnType
+import com.example.accounting.domain.taxation.gstreturn.GstScheme
 import com.example.accounting.domain.trading.OutstandingInvoice
 import com.example.accounting.domain.trading.TradingLineInput
 import com.example.accounting.domain.trading.TradingWorkflowEngine
@@ -149,6 +160,8 @@ data class AccountingUiState(
     val bankUpiProfiles: List<BankUpiProfile> = emptyList(),
     val businessProfile: BusinessProfile? = null,
     val individualProfile: IndividualProfile? = null,
+    val isPinCodeLookupInProgress: Boolean = false,
+    val pinCodeLookupResult: com.example.accounting.domain.profile.PinCodeLookupResult? = null,
     val currentSubscription: CompanySubscription? = null,
     val voucherDraftsPendingReview: List<VoucherDraft> = emptyList(),
     val outstandingReport: OutstandingReport? = null,
@@ -161,7 +174,24 @@ data class AccountingUiState(
     val lastImportRowOutcomes: Map<Int, String> = emptyMap(),
     val lastOcrExtraction: OcrExtractionResult? = null,
     val lastBarcodeGeneration: BarcodeGenerationResult? = null,
-    val lastBarcodeScan: BarcodeScanSuggestion? = null
+    val lastBarcodeScan: BarcodeScanSuggestion? = null,
+
+    // ==== Rule 33: GST Return Dashboard & Filing Foundation ====
+    val gstReturns: List<GstReturn> = emptyList(),
+    val selectedGstReturn: GstReturn? = null,
+    val selectedGstReturnSections: List<GstReturnSection> = emptyList(),
+    val selectedGstReturnArtifacts: List<GstReturnArtifact> = emptyList(),
+
+    // ==== Phase 7J-B.2 (Slice 2): Voucher Document Attachments ====
+    /** Which voucher [voucherAttachments] currently holds - lets a screen avoid rendering a
+     * previous voucher's stale attachment list for a single frame while a new one loads. */
+    val voucherAttachmentsVoucherId: String? = null,
+    val voucherAttachments: List<com.example.accounting.data.local.dao.VoucherAttachmentRow> = emptyList(),
+    val isVoucherAttachmentsLoading: Boolean = false,
+    val isAttachingDocument: Boolean = false,
+    /** The `referenceId` currently being unlinked, or null - lets the UI show a per-item spinner
+     * on exactly the row being removed rather than one section-wide flag. */
+    val removingAttachmentReferenceId: String? = null
 )
 
 /**
@@ -211,6 +241,11 @@ class AccountingViewModel(application: Application) : AndroidViewModel(applicati
     // OcrIngestionAdapter is deliberately left unimplemented (Phase 7J-B) - null adapter here
     // means requestExtraction always fails gracefully, never a crash. Not a bug to fix.
     private val ocrService = OcrSuggestionService(null, db.accountingDao())
+    private val gstReturnService = GstReturnManagementService(repository)
+    // The one deliberate offline-first exception (domain/profile/PinCodeLookup.kt's own doc
+    // comment) - a real, public, unauthenticated third-party API, never mocked/faked.
+    private val pinCodeLookupAdapter: com.example.accounting.domain.profile.PinCodeLookupAdapter =
+        com.example.accounting.data.network.PostalPinCodeLookupAdapter()
 
     private val _uiState = MutableStateFlow(AccountingUiState(isCloudSyncLoggedIn = authRepository.isLoggedIn()))
     val uiState: StateFlow<AccountingUiState> = _uiState.asStateFlow()
@@ -261,9 +296,12 @@ class AccountingViewModel(application: Application) : AndroidViewModel(applicati
                     is AppRoute.LedgerStatement -> { /* keep whatever tab was active (Home or Reports) */ }
                     is AppRoute.Parties -> { /* keep whatever tab was active (Sales or Purchases) */ }
                     is AppRoute.Profile -> { /* top-bar entry point - keep whatever tab was active */ }
+                    is AppRoute.ProfileWizard -> { /* reached from Profile - keep whatever tab was active */ }
                     is AppRoute.Subscription -> { loadSubscription() }
                     is AppRoute.DataTools -> { /* reached from Profile - keep whatever tab was active */ }
                     is AppRoute.Search -> { /* top-bar entry point - keep whatever tab was active */ }
+                    is AppRoute.About, is AppRoute.PrivacyPolicy, is AppRoute.TermsAndConditions, is AppRoute.Support ->
+                        { /* drawer entry point - keep whatever tab was active */ }
                 }
             }
         }
@@ -272,7 +310,8 @@ class AccountingViewModel(application: Application) : AndroidViewModel(applicati
     private fun loadCompaniesAndInitialData() {
         viewModelScope.launch {
             repository.getCompanies().collect { companiesList ->
-                val currentComp = _uiState.value.currentCompany
+                val currentId = _uiState.value.currentCompany?.companyId
+                val currentComp = companiesList.find { it.companyId == currentId }
                     ?: companiesList.find { it.isDefault }
                     ?: companiesList.firstOrNull()
 
@@ -348,6 +387,12 @@ class AccountingViewModel(application: Application) : AndroidViewModel(applicati
             launch {
                 repository.getGstFilingPeriods(companyId).collect { periods ->
                     _uiState.update { it.copy(gstFilingPeriods = periods) }
+                }
+            }
+
+            launch {
+                gstReturnService.listReturns(companyId).collect { returns ->
+                    _uiState.update { it.copy(gstReturns = returns) }
                 }
             }
 
@@ -1024,6 +1069,107 @@ class AccountingViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
+    /**
+     * D1a (Company Mode + Account-Only Sale/Purchase) - for a company whose [AccountingMode] is
+     * `ACCOUNT_ONLY` (no inventory tracking): Party ledger + Sales ledger + a single amount, no
+     * Item/Quantity/Rate, no GST calculation. Uses the exact same canonical path as
+     * [postTradingDocument] - [TradingWorkflowEngine] -> [AccountingRepository.postVoucher] - just
+     * calling [TradingWorkflowEngine.buildAccountOnlySale] instead of [TradingWorkflowEngine.buildSale].
+     * Place of Supply is never checked here since no GST is computed on this posting; the
+     * inventory-enabled path's Rule 29 check is completely untouched.
+     */
+    fun postAccountOnlySale(
+        customerLedgerId: String,
+        salesLedgerId: String,
+        amount: Money,
+        date: LocalDate,
+        referenceNumber: String,
+        narration: String
+    ) = postAccountOnlyTradingDocument(
+        isSale = true, partyLedgerId = customerLedgerId, tradeLedgerId = salesLedgerId,
+        amount = amount, date = date, referenceNumber = referenceNumber, narration = narration
+    )
+
+    /** D1a - Purchase counterpart of [postAccountOnlySale]; see its doc comment. */
+    fun postAccountOnlyPurchase(
+        supplierLedgerId: String,
+        purchaseLedgerId: String,
+        amount: Money,
+        date: LocalDate,
+        referenceNumber: String,
+        narration: String
+    ) = postAccountOnlyTradingDocument(
+        isSale = false, partyLedgerId = supplierLedgerId, tradeLedgerId = purchaseLedgerId,
+        amount = amount, date = date, referenceNumber = referenceNumber, narration = narration
+    )
+
+    private fun postAccountOnlyTradingDocument(
+        isSale: Boolean,
+        partyLedgerId: String,
+        tradeLedgerId: String,
+        amount: Money,
+        date: LocalDate,
+        referenceNumber: String,
+        narration: String
+    ) {
+        viewModelScope.launch {
+            val comp = _uiState.value.currentCompany ?: return@launch
+            val fy = _uiState.value.currentFinancialYear ?: return@launch
+            if (!amount.isPositive) {
+                emitMessage("Validation error: Enter an amount greater than zero.")
+                return@launch
+            }
+
+            val ledgers = repository.getLedgers(comp.companyId).first().associateBy { it.ledgerId }
+            val partyLedger = ledgers[partyLedgerId]
+            val tradeLedger = ledgers[tradeLedgerId]
+            if (partyLedger == null || tradeLedger == null) {
+                emitMessage("Validation error: Invalid ${if (isSale) "customer" else "supplier"} or ${if (isSale) "sales" else "purchase"} ledger selected.")
+                return@launch
+            }
+
+            val voucherType = if (isSale) VoucherType.SALES else VoucherType.PURCHASE
+            val voucherId = "VCH_${voucherType.code}_${UUID.randomUUID().toString().take(8).uppercase()}"
+            val voucherNumber = repository.generateNextVoucherNumber(comp.companyId, fy.financialYearId, voucherType)
+
+            val engineResult = if (isSale) {
+                TradingWorkflowEngine.buildAccountOnlySale(
+                    voucherId = voucherId, companyId = comp.companyId, financialYearId = fy.financialYearId,
+                    customerLedgerId = partyLedgerId, customerName = partyLedger.name,
+                    salesLedgerId = tradeLedgerId, salesLedgerName = tradeLedger.name, amount = amount
+                )
+            } else {
+                TradingWorkflowEngine.buildAccountOnlyPurchase(
+                    voucherId = voucherId, companyId = comp.companyId, financialYearId = fy.financialYearId,
+                    supplierLedgerId = partyLedgerId, supplierName = partyLedger.name,
+                    purchaseLedgerId = tradeLedgerId, purchaseLedgerName = tradeLedger.name, amount = amount
+                )
+            }
+
+            val voucher = Voucher(
+                voucherId = voucherId, companyId = comp.companyId, financialYearId = fy.financialYearId,
+                voucherNumber = voucherNumber, voucherType = voucherType, date = date,
+                referenceNumber = referenceNumber, narration = narration.ifBlank { "Being ${voucherType.displayName.lowercase()}" },
+                totalAmount = engineResult.totalAmount, items = engineResult.journalItems,
+                createdBy = if (isSale) "SALES_BILLING_DESK" else "PURCHASE_DESK",
+                partyGstin = partyLedger.gstin, isGstApplicable = false
+            )
+
+            val result = repository.postVoucher(voucher, stockLines = engineResult.stockLines, gstTransactions = engineResult.gstTransactions)
+            when (result) {
+                is AccountingResult.Success -> {
+                    emitMessage("${voucherType.displayName} $voucherNumber posted successfully: ${engineResult.totalAmount.formatPlain()}")
+                    scheduler.dispatchEvent(
+                        com.example.accounting.automation.jobs.AutomationEvent.VoucherPosted(comp.companyId, voucher)
+                    )
+                }
+                is AccountingResult.Failure -> {
+                    emitMessage("${voucherType.displayName} posting rejected: ${result.error.message}")
+                }
+            }
+        }
+    }
+
     fun postCreditNote(originalSaleVoucherId: String, date: LocalDate, referenceNumber: String, narration: String) =
         postNote(isCredit = true, originalVoucherId = originalSaleVoucherId, date = date, referenceNumber = referenceNumber, narration = narration)
 
@@ -1064,7 +1210,7 @@ class AccountingViewModel(application: Application) : AndroidViewModel(applicati
             val voucherNumber = repository.generateNextVoucherNumber(comp.companyId, fy.financialYearId, voucherType)
 
             val engineResult = TradingWorkflowEngine.buildNote(
-                noteVoucherId = voucherId, originalJournalItems = original.items,
+                noteVoucherId = voucherId, noteVoucherType = voucherType, originalJournalItems = original.items,
                 originalStockLines = originalStockLines, originalGstTransactions = originalGstTransactions
             )
 
@@ -1293,6 +1439,58 @@ class AccountingViewModel(application: Application) : AndroidViewModel(applicati
 
     // ---- Voucher Draft review (OCR prefill + manual line entry, never a second posting path) ----
 
+    /**
+     * Phase 7J-B.1: manual "Save as Draft" entry point for the generic double-entry voucher flows
+     * (Contra/Journal/Receipt/Payment) - complements OCR's [OcrSuggestionService.reviewAndPrefillVoucherDraft],
+     * which was previously the only caller of [voucherDraftService].createDraft. Mirrors
+     * [postQuickVoucher]'s JournalItem construction exactly, but calls `createDraft` instead of
+     * `repository.postVoucher` - no voucher number is generated (drafts never consume one; that
+     * happens only in [postVoucherDraft] at actual posting time) and no ledger balance is touched.
+     */
+    fun saveVoucherAsDraft(
+        voucherType: VoucherType,
+        date: LocalDate,
+        debitLedgerId: String,
+        creditLedgerId: String,
+        amount: Money,
+        narration: String,
+        refNumber: String = ""
+    ) {
+        viewModelScope.launch {
+            val comp = _uiState.value.currentCompany ?: return@launch
+            val fy = _uiState.value.currentFinancialYear ?: return@launch
+            val ledgersMap = _uiState.value.ledgers.associateBy { it.ledgerId }
+            val debitLedger = ledgersMap[debitLedgerId]
+            val creditLedger = ledgersMap[creditLedgerId]
+            if (debitLedger == null || creditLedger == null) {
+                emitMessage("Validation error: Invalid debit or credit ledger selected.")
+                return@launch
+            }
+            val draftVoucherId = "VCH_${voucherType.code}_${UUID.randomUUID().toString().take(8).uppercase()}"
+            val items = listOf(
+                JournalItem(
+                    itemId = UUID.randomUUID().toString(), voucherId = draftVoucherId, companyId = comp.companyId,
+                    financialYearId = fy.financialYearId, ledgerId = debitLedgerId, ledgerName = debitLedger.name,
+                    type = DrCr.DEBIT, amount = amount, narration = narration, lineOrder = 1
+                ),
+                JournalItem(
+                    itemId = UUID.randomUUID().toString(), voucherId = draftVoucherId, companyId = comp.companyId,
+                    financialYearId = fy.financialYearId, ledgerId = creditLedgerId, ledgerName = creditLedger.name,
+                    type = DrCr.CREDIT, amount = amount, narration = narration, lineOrder = 2
+                )
+            )
+            val voucher = Voucher(
+                voucherId = draftVoucherId, companyId = comp.companyId, financialYearId = fy.financialYearId,
+                voucherNumber = "", voucherType = voucherType, date = date, referenceNumber = refNumber,
+                narration = narration, totalAmount = amount, items = items, createdBy = "SENIOR_ACCOUNTANT"
+            )
+            when (val result = voucherDraftService.createDraft(voucher)) {
+                is AccountingResult.Success -> emitMessage("Saved as draft - resume anytime from Pending Reviews")
+                is AccountingResult.Failure -> emitMessage("Could not save draft: ${result.error.message}")
+            }
+        }
+    }
+
     fun editVoucherDraftLines(draft: VoucherDraft, lines: List<com.example.accounting.application.voucher.VoucherDraftLine>) {
         viewModelScope.launch {
             val comp = _uiState.value.currentCompany ?: return@launch
@@ -1356,6 +1554,125 @@ class AccountingViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
+    // ---- Phase 7J-B.2 (Slice 2) - Voucher Document Attachments: ViewModel layer over the frozen
+    // Slice 1 infrastructure (AttachmentStorageAdapter / VoucherManagementServiceImpl.attach-
+    // DocumentReference/removeDocumentReference/getAttachmentsForVoucher). The UI never touches
+    // Room, DocumentAssetEntity, company validation, or duplicate semantics directly - every one of
+    // those decisions is made here or one layer below. Only real, currently-posted vouchers are
+    // supported this slice - see the class-level Slice 2 report for why voucher drafts are not
+    // wired (attachDocumentReference requires a real `vouchers` row, which a still-pending draft
+    // deliberately does not have).
+
+    fun loadVoucherAttachments(voucherId: String) {
+        viewModelScope.launch {
+            val comp = _uiState.value.currentCompany ?: return@launch
+            _uiState.update { it.copy(isVoucherAttachmentsLoading = true, voucherAttachmentsVoucherId = voucherId) }
+            val attachments = voucherDraftService.getAttachmentsForVoucher(comp.companyId, voucherId)
+            _uiState.update { it.copy(isVoucherAttachmentsLoading = false, voucherAttachments = attachments) }
+        }
+    }
+
+    /** Called when a voucher's detail view closes, so a stale attachment list never flashes for
+     * the next voucher opened before its own [loadVoucherAttachments] call resolves. */
+    fun clearVoucherAttachments() {
+        _uiState.update { it.copy(voucherAttachmentsVoucherId = null, voucherAttachments = emptyList()) }
+    }
+
+    /**
+     * Attach flow (Slice 2 hardened, per the file-type-validation fix): [AttachmentFileValidator.validate]
+     * FIRST, against the real file bytes - never the OS-reported MIME, never the bare extension
+     * alone - so a rejected file never reaches [AttachmentStorageAdapter.copyToDurableStorage],
+     * never gets a [com.example.accounting.domain.rendering.DocumentAsset] row, and never gets a
+     * [com.example.accounting.data.local.entity.VoucherDocumentReferenceEntity] row. Only on
+     * acceptance: copy -> real SHA-256 checksum of the copied bytes (the same [sha256] every other
+     * asset-creating call site already uses, never a second algorithm) -> `createDocumentAsset`
+     * (type [DocumentAssetType.VOUCHER_ATTACHMENT], MIME from the validator, never `ContentResolver`)
+     * -> `attachDocumentReference` -> reload. On ANY failure past the copy step, the just-created
+     * file (and, if it got that far, the just-created but never-linked [com.example.accounting.domain.rendering.DocumentAsset]
+     * row) is deleted - a failed attach never leaves an orphaned file or a dangling asset row, and
+     * never reports success.
+     */
+    fun attachDocumentToVoucher(voucherId: String, uri: android.net.Uri, originalFileName: String?) {
+        viewModelScope.launch {
+            val comp = _uiState.value.currentCompany ?: return@launch
+            val context = getApplication<Application>()
+            _uiState.update { it.copy(isAttachingDocument = true) }
+
+            val validation = com.example.accounting.data.storage.AttachmentFileValidator.validate(originalFileName) {
+                try { context.contentResolver.openInputStream(uri) } catch (e: Exception) { null }
+            }
+            if (validation is com.example.accounting.data.storage.AttachmentFileValidator.ValidationResult.Rejected) {
+                _uiState.update { it.copy(isAttachingDocument = false) }
+                emitMessage(validation.reason)
+                return@launch
+            }
+            val accepted = validation as com.example.accounting.data.storage.AttachmentFileValidator.ValidationResult.Accepted
+
+            val copyResult = try {
+                context.contentResolver.openInputStream(uri)?.use { input ->
+                    com.example.accounting.data.storage.AttachmentStorageAdapter.copyToDurableStorage(input, context.filesDir, originalFileName, accepted.mimeType)
+                } ?: throw com.example.accounting.data.storage.AttachmentStorageAdapter.AttachmentCopyException("Could not open the selected file.")
+            } catch (e: com.example.accounting.data.storage.AttachmentStorageAdapter.AttachmentCopyException) {
+                _uiState.update { it.copy(isAttachingDocument = false) }
+                emitMessage("Could not attach file: ${e.message}")
+                return@launch
+            }
+
+            val checksum = try {
+                sha256(File(copyResult.storageReference).readBytes())
+            } catch (e: Exception) {
+                File(copyResult.storageReference).delete()
+                _uiState.update { it.copy(isAttachingDocument = false) }
+                emitMessage("Could not read the copied attachment file.")
+                return@launch
+            }
+
+            val assetResult = repository.createDocumentAsset(
+                comp.companyId, DocumentAssetType.VOUCHER_ATTACHMENT, copyResult.storageReference,
+                checksum, copyResult.mimeType, copyResult.sizeBytes
+            )
+            if (assetResult is AccountingResult.Failure) {
+                File(copyResult.storageReference).delete()
+                _uiState.update { it.copy(isAttachingDocument = false) }
+                emitMessage("Could not attach file: ${assetResult.error.message}")
+                return@launch
+            }
+            val asset = (assetResult as AccountingResult.Success).data
+
+            val attachResult = voucherDraftService.attachDocumentReference(comp.companyId, voucherId, asset.assetId)
+            if (attachResult is AccountingResult.Failure) {
+                // Roll back both the DB row and the file - never leave an orphaned asset behind.
+                repository.deleteDocumentAsset(comp.companyId, asset.assetId)
+                File(copyResult.storageReference).delete()
+                _uiState.update { it.copy(isAttachingDocument = false) }
+                emitMessage("Could not attach file: ${attachResult.error.message}")
+                return@launch
+            }
+
+            _uiState.update { it.copy(isAttachingDocument = false) }
+            emitMessage("Attachment added")
+            loadVoucherAttachments(voucherId)
+        }
+    }
+
+    /** Unlink only (Slice 2, Step 8) - see [com.example.accounting.application.voucher.VoucherManagementServiceImpl.removeDocumentReference]'s
+     * doc comment for the exact "never deletes the asset/voucher/journal items" guarantee this
+     * delegates to unchanged. */
+    fun removeVoucherAttachment(voucherId: String, referenceId: String) {
+        viewModelScope.launch {
+            val comp = _uiState.value.currentCompany ?: return@launch
+            _uiState.update { it.copy(removingAttachmentReferenceId = referenceId) }
+            when (val result = voucherDraftService.removeDocumentReference(comp.companyId, referenceId)) {
+                is AccountingResult.Success -> {
+                    emitMessage("Attachment removed")
+                    loadVoucherAttachments(voucherId)
+                }
+                is AccountingResult.Failure -> emitMessage("Could not remove attachment: ${result.error.message}")
+            }
+            _uiState.update { it.copy(removingAttachmentReferenceId = null) }
+        }
+    }
+
     // ---- Invoice drafts (read/cancel only this pass - creation reuses the existing, tested
     // Sale/Purchase dialog and its immediate-post path; see docs/54 for the reasoning) ----
 
@@ -1372,11 +1689,17 @@ class AccountingViewModel(application: Application) : AndroidViewModel(applicati
 
     // ---- Profile / Business Setup ----
 
-    fun updateBusinessProfile(businessName: String, legalName: String, address: String, phone: String, email: String, gstin: String, pan: String) {
+    fun updateBusinessProfile(
+        businessName: String, legalName: String, address: String, phone: String, email: String, gstin: String, pan: String,
+        pinCode: String? = null, city: String? = null, state: String? = null, country: String? = null
+    ) {
         viewModelScope.launch {
             val comp = _uiState.value.currentCompany ?: return@launch
             val base = _uiState.value.businessProfile ?: BusinessProfile(businessProfileId = "", companyId = comp.companyId, businessName = businessName)
-            val profile = base.copy(businessName = businessName, legalName = legalName, address = address, phone = phone, email = email, gstin = gstin, pan = pan)
+            val profile = base.copy(
+                businessName = businessName, legalName = legalName, address = address, phone = phone, email = email, gstin = gstin, pan = pan,
+                pinCode = pinCode ?: base.pinCode, city = city ?: base.city, state = state ?: base.state, country = country ?: base.country
+            )
             when (val result = profileService.upsertBusinessProfile(comp.companyId, profile)) {
                 is AccountingResult.Success -> {
                     _uiState.update { it.copy(businessProfile = result.data) }
@@ -1387,11 +1710,76 @@ class AccountingViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
-    fun updateIndividualProfile(name: String, address: String, phone: String, email: String, pan: String) {
+    /** Profile Wizard (Part 2) - the full [BusinessProfile] shape, unlike [updateBusinessProfile]'s
+     * 7-field subset (kept for the old single-page screen, unchanged). Called once per wizard
+     * step ("Save progress" requirement) - always `.copy()`s over the currently-loaded profile, so
+     * a step the user hasn't reached yet never gets blanked by an earlier step's save. */
+    fun updateBusinessProfileFull(
+        businessName: String, legalName: String, constitutionType: com.example.accounting.domain.rendering.ConstitutionType,
+        address: String, pinCode: String, city: String, state: String, country: String, phone: String, email: String, website: String,
+        gstin: String, pan: String, tan: String, udyam: String,
+        bankName: String, bankAccountNumber: String, bankIfsc: String, bankBranch: String, upiId: String,
+        termsAndConditions: String
+    ) {
+        viewModelScope.launch {
+            val comp = _uiState.value.currentCompany ?: return@launch
+            val base = _uiState.value.businessProfile ?: BusinessProfile(businessProfileId = "", companyId = comp.companyId, businessName = businessName)
+            val profile = base.copy(
+                businessName = businessName, legalName = legalName, constitutionType = constitutionType,
+                address = address, pinCode = pinCode, city = city, state = state, country = country,
+                phone = phone, email = email, website = website,
+                gstin = gstin, pan = pan, tan = tan, udyam = udyam,
+                bankName = bankName, bankAccountNumber = bankAccountNumber, bankIfsc = bankIfsc, bankBranch = bankBranch, upiId = upiId,
+                termsAndConditions = termsAndConditions
+            )
+            when (val result = profileService.upsertBusinessProfile(comp.companyId, profile)) {
+                is AccountingResult.Success -> _uiState.update { it.copy(businessProfile = result.data) }
+                is AccountingResult.Failure -> emitMessage("Failed: ${result.error.message}")
+            }
+        }
+    }
+
+    /** Reuses the exact asset pipeline already established for OCR/import (`sha256` + real
+     * [DocumentAssetType], never a fake/placeholder asset id) - picks up wherever the profile
+     * currently stands via `.copy()`, same safe-partial-update pattern as [updateBusinessProfileFull]. */
+    fun uploadBusinessBrandingAsset(imageFile: File, type: DocumentAssetType) {
+        viewModelScope.launch {
+            val comp = _uiState.value.currentCompany ?: return@launch
+            val bytes = imageFile.readBytes()
+            val assetResult = repository.createDocumentAsset(comp.companyId, type, imageFile.absolutePath, sha256(bytes), "image/jpeg", imageFile.length())
+            if (assetResult is AccountingResult.Failure) {
+                emitMessage("Upload failed: ${assetResult.error.message}")
+                return@launch
+            }
+            val asset = (assetResult as AccountingResult.Success).data
+            val base = _uiState.value.businessProfile ?: BusinessProfile(businessProfileId = "", companyId = comp.companyId, businessName = comp.name)
+            val profile = when (type) {
+                DocumentAssetType.LOGO -> base.copy(logoAssetId = asset.assetId)
+                DocumentAssetType.SIGNATURE -> base.copy(signatureAssetId = asset.assetId)
+                DocumentAssetType.QR_CODE -> base.copy(qrCodeAssetId = asset.assetId)
+                else -> base
+            }
+            when (val result = profileService.upsertBusinessProfile(comp.companyId, profile)) {
+                is AccountingResult.Success -> {
+                    _uiState.update { it.copy(businessProfile = result.data) }
+                    emitMessage("${type.name.lowercase().replaceFirstChar { it.uppercase() }} uploaded")
+                }
+                is AccountingResult.Failure -> emitMessage("Failed: ${result.error.message}")
+            }
+        }
+    }
+
+    fun updateIndividualProfile(
+        name: String, address: String, phone: String, email: String, pan: String,
+        pinCode: String? = null, city: String? = null, state: String? = null, country: String? = null
+    ) {
         viewModelScope.launch {
             val comp = _uiState.value.currentCompany ?: return@launch
             val base = _uiState.value.individualProfile ?: IndividualProfile(individualProfileId = "", companyId = comp.companyId, name = name)
-            val profile = base.copy(name = name, address = address, phone = phone, email = email, pan = pan)
+            val profile = base.copy(
+                name = name, address = address, phone = phone, email = email, pan = pan,
+                pinCode = pinCode ?: base.pinCode, city = city ?: base.city, state = state ?: base.state, country = country ?: base.country
+            )
             when (val result = profileService.upsertIndividualProfile(comp.companyId, profile)) {
                 is AccountingResult.Success -> {
                     _uiState.update { it.copy(individualProfile = result.data) }
@@ -1400,6 +1788,24 @@ class AccountingViewModel(application: Application) : AndroidViewModel(applicati
                 is AccountingResult.Failure -> emitMessage("Failed: ${result.error.message}")
             }
         }
+    }
+
+    /** Fires a real lookup against [pinCodeLookupAdapter] - the caller (Business/Individual
+     * Profile's City/State/Country fields) reads [AccountingUiState.pinCodeLookupResult] and
+     * applies it itself; this function never writes directly into a profile, since it has no way
+     * to know which of the two profiles (or which in-progress wizard step) the caller means. On
+     * failure/offline, [PinCodeLookupResult.success] is false and the fields stay exactly as the
+     * user already had them - never a guessed value. */
+    fun lookupPinCode(pinCode: String) {
+        viewModelScope.launch {
+            _uiState.update { it.copy(isPinCodeLookupInProgress = true) }
+            val result = pinCodeLookupAdapter.lookup(pinCode)
+            _uiState.update { it.copy(isPinCodeLookupInProgress = false, pinCodeLookupResult = result) }
+        }
+    }
+
+    fun clearPinCodeLookupResult() {
+        _uiState.update { it.copy(pinCodeLookupResult = null) }
     }
 
     // ---- Subscription ----
@@ -1445,6 +1851,158 @@ class AccountingViewModel(application: Application) : AndroidViewModel(applicati
                     cashFlowReport = cashFlow, ratioAnalysisReport = ratios, hsnSacSummary = hsnSac
                 )
             }
+        }
+    }
+
+    // ==== Rule 33: GST Return Dashboard & Filing Foundation ====
+
+    /** Resolves/creates the return for this exact Dashboard selection and makes it the selected
+     * return - the same "find or create, then open" flow whether this is a brand-new selection or
+     * reopening a previously-saved one (Rule 33, Section 15). */
+    /** Rule 33 follow-up - the Dashboard's own compact Settings strip writes straight through to
+     * the existing company-profile update (never a separate/silent path) so Registered/Regular/
+     * QRMP toggles here and the same facts anywhere else in the app never drift apart. */
+    fun updateGstEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            val comp = _uiState.value.currentCompany ?: return@launch
+            repository.updateAccountingConfiguration(comp.companyId, gstEnabled = enabled)
+        }
+    }
+
+    fun updateGstScheme(scheme: GstScheme) {
+        viewModelScope.launch {
+            val comp = _uiState.value.currentCompany ?: return@launch
+            repository.updateAccountingConfiguration(comp.companyId, gstScheme = scheme)
+        }
+    }
+
+    fun updateGstFilingFrequency(frequency: GstReturnPeriodicity) {
+        viewModelScope.launch {
+            val comp = _uiState.value.currentCompany ?: return@launch
+            repository.updateAccountingConfiguration(comp.companyId, gstFilingFrequency = frequency)
+        }
+    }
+
+    fun selectGstReturnPeriod(
+        quarter: GstQuarter,
+        month: Int?,
+        scheme: GstScheme,
+        returnType: GstReturnType,
+        periodicity: GstReturnPeriodicity,
+        filingMode: GstFilingMode
+    ) {
+        viewModelScope.launch {
+            val comp = _uiState.value.currentCompany ?: return@launch
+            val fy = _uiState.value.currentFinancialYear ?: return@launch
+            val gstReturn = gstReturnService.getOrCreateReturn(comp.companyId, fy, quarter, month, scheme, returnType, periodicity, filingMode)
+            openGstReturn(gstReturn.gstReturnId)
+        }
+    }
+
+    fun openGstReturn(gstReturnId: String) {
+        viewModelScope.launch {
+            val comp = _uiState.value.currentCompany ?: return@launch
+            val gstReturn = gstReturnService.getReturn(comp.companyId, gstReturnId)
+            val sections = gstReturnService.getSections(gstReturnId)
+            val artifacts = gstReturnService.getArtifacts(gstReturnId)
+            _uiState.update {
+                it.copy(selectedGstReturn = gstReturn, selectedGstReturnSections = sections, selectedGstReturnArtifacts = artifacts)
+            }
+        }
+    }
+
+    fun clearSelectedGstReturn() {
+        _uiState.update { it.copy(selectedGstReturn = null, selectedGstReturnSections = emptyList(), selectedGstReturnArtifacts = emptyList()) }
+    }
+
+    private suspend fun reopenSelectedGstReturn(gstReturnId: String) {
+        val comp = _uiState.value.currentCompany ?: return
+        val gstReturn = gstReturnService.getReturn(comp.companyId, gstReturnId)
+        val sections = gstReturnService.getSections(gstReturnId)
+        val artifacts = gstReturnService.getArtifacts(gstReturnId)
+        _uiState.update {
+            it.copy(selectedGstReturn = gstReturn, selectedGstReturnSections = sections, selectedGstReturnArtifacts = artifacts)
+        }
+    }
+
+    fun prepareSelectedGstReturn() {
+        viewModelScope.launch {
+            val comp = _uiState.value.currentCompany ?: return@launch
+            val fy = _uiState.value.currentFinancialYear ?: return@launch
+            val gstReturnId = _uiState.value.selectedGstReturn?.gstReturnId ?: return@launch
+            when (val result = gstReturnService.prepare(comp.companyId, gstReturnId, fy)) {
+                is AccountingResult.Success -> emitMessage("Return prepared from posted GST transactions.")
+                is AccountingResult.Failure -> emitMessage("Prepare failed: ${result.error.message}")
+            }
+            reopenSelectedGstReturn(gstReturnId)
+        }
+    }
+
+    fun validateSelectedGstReturn() {
+        viewModelScope.launch {
+            val comp = _uiState.value.currentCompany ?: return@launch
+            val fy = _uiState.value.currentFinancialYear ?: return@launch
+            val gstReturnId = _uiState.value.selectedGstReturn?.gstReturnId ?: return@launch
+            when (val result = gstReturnService.validate(comp.companyId, gstReturnId, fy)) {
+                is AccountingResult.Success -> emitMessage(
+                    if (result.data.status == com.example.accounting.domain.taxation.gstreturn.GstReturnStatus.READY) "Return validated - ready to file."
+                    else "Validation failed: ${result.data.errorMessage}"
+                )
+                is AccountingResult.Failure -> emitMessage("Validation failed: ${result.error.message}")
+            }
+            reopenSelectedGstReturn(gstReturnId)
+        }
+    }
+
+    fun generateSelectedGstReturnOfflineJson() {
+        viewModelScope.launch {
+            val comp = _uiState.value.currentCompany ?: return@launch
+            val fy = _uiState.value.currentFinancialYear ?: return@launch
+            val gstReturnId = _uiState.value.selectedGstReturn?.gstReturnId ?: return@launch
+            when (val result = gstReturnService.generateOfflineJson(comp.companyId, gstReturnId, fy)) {
+                is AccountingResult.Success -> emitMessage("Return JSON generated and saved as a new artifact.")
+                is AccountingResult.Failure -> emitMessage("JSON generation failed: ${result.error.message}")
+            }
+            reopenSelectedGstReturn(gstReturnId)
+        }
+    }
+
+    fun importSelectedGstReturnOfflineResponse(responseJson: String) {
+        viewModelScope.launch {
+            val comp = _uiState.value.currentCompany ?: return@launch
+            val gstReturnId = _uiState.value.selectedGstReturn?.gstReturnId ?: return@launch
+            when (val result = gstReturnService.importOfflineResponse(comp.companyId, gstReturnId, responseJson)) {
+                is AccountingResult.Success -> emitMessage("Response imported. Review it, then mark the return Filed once confirmed.")
+                is AccountingResult.Failure -> emitMessage("Import failed: ${result.error.message}")
+            }
+            reopenSelectedGstReturn(gstReturnId)
+        }
+    }
+
+    fun markSelectedGstReturnFiled(acknowledgementNumber: String) {
+        viewModelScope.launch {
+            val comp = _uiState.value.currentCompany ?: return@launch
+            val gstReturnId = _uiState.value.selectedGstReturn?.gstReturnId ?: return@launch
+            when (val result = gstReturnService.markFiled(comp.companyId, gstReturnId, acknowledgementNumber)) {
+                is AccountingResult.Success -> emitMessage("Return marked as Filed.")
+                is AccountingResult.Failure -> emitMessage("Could not mark as Filed: ${result.error.message}")
+            }
+            reopenSelectedGstReturn(gstReturnId)
+        }
+    }
+
+    fun submitSelectedGstReturnOnline() {
+        viewModelScope.launch {
+            val comp = _uiState.value.currentCompany ?: return@launch
+            val fy = _uiState.value.currentFinancialYear ?: return@launch
+            val gstReturnId = _uiState.value.selectedGstReturn?.gstReturnId ?: return@launch
+            when (val result = gstReturnService.submitOnline(comp.companyId, gstReturnId, fy)) {
+                is AccountingResult.Success -> emitMessage(
+                    result.data.errorMessage ?: "Return submitted."
+                )
+                is AccountingResult.Failure -> emitMessage("Submission failed: ${result.error.message}")
+            }
+            reopenSelectedGstReturn(gstReturnId)
         }
     }
 
@@ -1633,6 +2191,55 @@ class AccountingViewModel(application: Application) : AndroidViewModel(applicati
                     "Balanced: ${if (it.isBalanced) "Yes" else "No"}"
             }
             else -> null
+        }
+    }
+
+    /** Maps the same already-loaded report [AccountingUiState] currently displays to
+     * [com.example.accounting.domain.rendering.TabularReportData] via `ReportPdfMapping.kt` - no
+     * recalculation, same three report kinds as [exportReportAndShare]/[buildReportShareText].
+     * Null for anything not yet loaded or not one of the three supported keys. */
+    private fun reportPdfData(reportKey: String): com.example.accounting.domain.rendering.TabularReportData? {
+        val isServiceCompany = _uiState.value.currentCompany?.businessType == com.example.accounting.domain.company.BusinessType.SERVICE
+        return when (reportKey) {
+            "Trial Balance" -> _uiState.value.trialBalance?.toPdfData()
+            "Profit & Loss" -> if (isServiceCompany) _uiState.value.incomeAndExpenditure?.toPdfData() else _uiState.value.profitAndLoss?.toPdfData()
+            "Balance Sheet" -> _uiState.value.balanceSheet?.toPdfData()
+            else -> null
+        }
+    }
+
+    /** Renders [reportKey]'s already-loaded report to a PDF file via [TabularPdfRenderer] - the
+     * one renderer for tabular financial reports (never [PdfDocumentRenderer], which is
+     * DocumentData/trade-document-shaped only). Returns null if the report isn't loaded/supported. */
+    fun renderReportPdf(reportKey: String): java.io.File? {
+        val data = reportPdfData(reportKey) ?: return null
+        return com.example.accounting.data.rendering.TabularPdfRenderer.render(getApplication(), data)
+    }
+
+    fun printReport(reportKey: String) {
+        val file = renderReportPdf(reportKey) ?: run { emitMessage("$reportKey is not loaded yet."); return }
+        documentPreviewService.print(getApplication(), file, reportKey)
+    }
+
+    fun shareReportPdf(reportKey: String): android.content.Intent? {
+        val file = renderReportPdf(reportKey) ?: return null
+        return documentPreviewService.buildShareIntent(getApplication(), file, "application/pdf")
+    }
+
+    /** Day Book Print/PDF - unlike [renderReportPdf] (which formats an already-loaded
+     * [AccountingUiState] report), Day Book's on-screen view is a live voucher-list filter, not a
+     * stored [com.example.accounting.domain.reports.DayBookReport]. Printing therefore fetches the
+     * SAME, already-existing, unmodified [ReportManagementService.dayBook] used everywhere else
+     * Day Book data is needed - the full current-FY Day Book (never a second calculation, and
+     * never re-derived from the UI's own search/type filter, which is a browsing convenience, not
+     * an accounting boundary). */
+    fun printDayBook() {
+        viewModelScope.launch {
+            val comp = _uiState.value.currentCompany ?: run { emitMessage("No company selected."); return@launch }
+            val fy = _uiState.value.currentFinancialYear ?: run { emitMessage("No financial year selected."); return@launch }
+            val report = reportService.dayBook(comp.companyId, fy.startDate..fy.endDate)
+            val file = com.example.accounting.data.rendering.TabularPdfRenderer.render(getApplication(), report.toPdfData())
+            documentPreviewService.print(getApplication(), file, "Day Book")
         }
     }
 }

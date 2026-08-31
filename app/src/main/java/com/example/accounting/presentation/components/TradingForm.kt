@@ -85,7 +85,17 @@ internal fun TradingForm(
     partyDropdownExpanded: Boolean,
     onPartyDropdownExpandedChange: (Boolean) -> Unit,
     tradeDropdownExpanded: Boolean,
-    onTradeDropdownExpandedChange: (Boolean) -> Unit
+    onTradeDropdownExpandedChange: (Boolean) -> Unit,
+    onAddNewParty: () -> Unit = {},
+    /** D1a (Company Mode + Account-Only Sale/Purchase) - the single existing gating point
+     * ([com.example.accounting.presentation.viewmodel.isInventoryEnabled]) also used everywhere
+     * else Item UI is shown/hidden - never re-derived here. When `false` (the company's
+     * [com.example.accounting.domain.company.AccountingMode] is `ACCOUNT_ONLY`), the entire
+     * Item/Quantity/Rate/Tax-Treatment section is replaced by a single plain Amount field - no
+     * Item is ever required, mandatory, or fabricated to satisfy this form. */
+    isInventoryEnabled: Boolean = true,
+    amountInput: String = "",
+    onAmountChange: (String) -> Unit = {}
 ) {
     Text(
         if (isSale) "Sale - Tax Invoice" else "Purchase - Supplier Bill",
@@ -108,6 +118,10 @@ internal fun TradingForm(
                     onClick = { onPartyLedgerChange(led.ledgerId); onPartyDropdownExpandedChange(false) }
                 )
             }
+            DropdownMenuItem(
+                text = { Text("+ Add New ${if (isSale) "Customer" else "Supplier"}", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold) },
+                onClick = { onPartyDropdownExpandedChange(false); onAddNewParty() }
+            )
         }
     }
 
@@ -116,7 +130,10 @@ internal fun TradingForm(
     // file - warn here, and the per-line GST preview below skips the breakdown entirely rather than
     // showing a number computed against a fallback. Posting itself is also blocked for this same
     // reason (see AccountingViewModel.postTradingDocument / AccountingRepository.postGstOnlySale).
-    val placeOfSupplyMissing = partyLedgerId.isNotBlank() && selectedPartyLedger?.stateCode.isNullOrBlank()
+    // D1a: an ACCOUNT_ONLY posting never computes GST, so Place of Supply is irrelevant to it -
+    // showing this banner ("...before this can be posted") would be misleading since posting is
+    // never actually blocked on it for this company mode.
+    val placeOfSupplyMissing = isInventoryEnabled && partyLedgerId.isNotBlank() && selectedPartyLedger?.stateCode.isNullOrBlank()
     if (placeOfSupplyMissing) {
         Spacer(modifier = Modifier.height(8.dp))
         Surface(
@@ -150,8 +167,47 @@ internal fun TradingForm(
         }
     }
 
+    val tradeLedgerOptions = ledgers.filter { if (isSale) isSalesLedger(it) else isPurchaseLedger(it) }
+    if (tradeLedgerOptions.isEmpty()) {
+        Spacer(modifier = Modifier.height(8.dp))
+        Surface(shape = RoundedCornerShape(8.dp), color = MaterialTheme.colorScheme.errorContainer, modifier = Modifier.fillMaxWidth()) {
+            Text(
+                "No ${if (isSale) "Sales" else "Purchase"} account exists yet - create one from Ledgers before this can be posted.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onErrorContainer,
+                modifier = Modifier.padding(10.dp)
+            )
+        }
+    }
+
+    if (!isInventoryEnabled) {
+        // D1a: an ACCOUNT_ONLY company has no Item catalog to bill against - a plain amount is
+        // the whole line. No Item/Quantity/Rate/Warehouse/Tax-Treatment control is shown, and
+        // none is required for the form to be postable (see CreateVoucherDialog's isReady check).
+        Spacer(modifier = Modifier.height(12.dp))
+        OutlinedTextField(
+            value = amountInput,
+            onValueChange = onAmountChange,
+            label = { Text(if (isSale) "Sale Amount" else "Purchase Amount") },
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+            modifier = Modifier.fillMaxWidth()
+        )
+        return
+    }
+
     Spacer(modifier = Modifier.height(12.dp))
-    Text("Items", style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold))
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text("Items", style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold))
+        TextButton(onClick = { onLinesChange(lines + LineFormState()) }) {
+            Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+            Spacer(modifier = Modifier.width(4.dp))
+            Text("Add Line")
+        }
+    }
     Spacer(modifier = Modifier.height(6.dp))
 
     if (stockItems.isEmpty()) {
@@ -201,12 +257,6 @@ internal fun TradingForm(
             onLineChange = { updated -> onLinesChange(lines.toMutableList().also { it[index] = updated }) },
             onRemove = { onLinesChange(lines.filterIndexed { i, _ -> i != index }) }
         )
-    }
-
-    TextButton(onClick = { onLinesChange(lines + LineFormState()) }) {
-        Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
-        Spacer(modifier = Modifier.width(4.dp))
-        Text("Add Line")
     }
 
     if (runningTaxable.isPositive) {

@@ -20,6 +20,10 @@ import com.example.accounting.data.local.entity.VoucherDraftLineEntity
 import com.example.accounting.data.local.entity.FinancialYearEntity
 import com.example.accounting.data.local.entity.GroupEntity
 import com.example.accounting.data.local.entity.GstFilingPeriodEntity
+import com.example.accounting.data.local.entity.GstReturnArtifactEntity
+import com.example.accounting.data.local.entity.GstReturnEntity
+import com.example.accounting.data.local.entity.GstReturnSectionEntity
+import com.example.accounting.data.local.entity.GstReturnSubmissionEntity
 import com.example.accounting.data.local.entity.GstTransactionEntity
 import com.example.accounting.data.local.entity.InvoiceEntity
 import com.example.accounting.data.local.entity.InvoiceLineEntity
@@ -54,6 +58,21 @@ import com.example.accounting.domain.rendering.ConstitutionType
 import com.example.accounting.domain.rendering.DocumentAssetType
 import com.example.accounting.domain.rendering.TemplateStatus
 import kotlinx.coroutines.flow.Flow
+
+/** Plain query-projection POJO (Phase 7J-B.2), not a `@Entity` - the joined-row shape
+ * [AccountingDao.getVoucherAttachments] returns, one row per [VoucherDocumentReferenceEntity] +
+ * its linked [DocumentAssetEntity] metadata (never the file bytes). */
+data class VoucherAttachmentRow(
+    val referenceId: String,
+    val voucherId: String,
+    val documentAssetId: String,
+    val type: DocumentAssetType,
+    val storageReference: String,
+    val checksum: String,
+    val mimeType: String,
+    val sizeBytes: Long,
+    val attachedAt: Long
+)
 
 @Dao
 interface AccountingDao {
@@ -339,6 +358,13 @@ interface AccountingDao {
     @Query("SELECT * FROM gst_transactions WHERE companyId = :companyId AND financialYearId = :fyId ORDER BY createdAt ASC")
     suspend fun getGstTransactionsForCompanyFY(companyId: String, fyId: String): List<GstTransactionEntity>
 
+    /** D1b - fetches every line of ONE business transaction by its [GstTransactionEntity.transactionGroupId],
+     * company-scoped to prevent cross-tenant lookup. The only way to find a GST-only transaction's
+     * lines (voucherId is always null there) - used to build a GST-only Credit/Debit Note against
+     * the original GST-only Sale/Purchase. */
+    @Query("SELECT * FROM gst_transactions WHERE companyId = :companyId AND transactionGroupId = :groupId ORDER BY lineOrder ASC")
+    suspend fun getGstTransactionsByGroupId(companyId: String, groupId: String): List<GstTransactionEntity>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertGstTransactions(transactions: List<GstTransactionEntity>)
 
@@ -494,6 +520,7 @@ interface AccountingDao {
         """
         UPDATE business_profiles SET
             businessName = :businessName, legalName = :legalName, constitutionType = :constitutionType, address = :address,
+            pinCode = :pinCode, city = :city, state = :state, country = :country,
             phone = :phone, email = :email, website = :website,
             gstin = :gstin, pan = :pan, tan = :tan, udyam = :udyam, logoAssetId = :logoAssetId,
             bankName = :bankName, bankAccountNumber = :bankAccountNumber, bankIfsc = :bankIfsc,
@@ -505,7 +532,7 @@ interface AccountingDao {
     )
     suspend fun updateBusinessProfile(
         companyId: String, businessProfileId: String, businessName: String, legalName: String,
-        constitutionType: ConstitutionType, address: String,
+        constitutionType: ConstitutionType, address: String, pinCode: String, city: String, state: String, country: String,
         phone: String, email: String, website: String, gstin: String, pan: String, tan: String, udyam: String, logoAssetId: String?,
         bankName: String, bankAccountNumber: String, bankIfsc: String, bankBranch: String, upiId: String,
         qrCodeAssetId: String?, signatureAssetId: String?, termsAndConditions: String, updatedAt: Long
@@ -521,14 +548,16 @@ interface AccountingDao {
     @Query(
         """
         UPDATE individual_profiles SET
-            name = :name, address = :address, pan = :pan, phone = :phone,
+            name = :name, address = :address, pinCode = :pinCode, city = :city, state = :state, country = :country,
+            pan = :pan, phone = :phone,
             email = :email, signatureAssetId = :signatureAssetId,
             termsAndConditions = :termsAndConditions, updatedAt = :updatedAt
         WHERE companyId = :companyId AND individualProfileId = :individualProfileId
         """
     )
     suspend fun updateIndividualProfile(
-        companyId: String, individualProfileId: String, name: String, address: String, pan: String,
+        companyId: String, individualProfileId: String, name: String, address: String,
+        pinCode: String, city: String, state: String, country: String, pan: String,
         phone: String, email: String, signatureAssetId: String?, termsAndConditions: String, updatedAt: Long
     )
 
@@ -541,6 +570,15 @@ interface AccountingDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertDocumentAsset(asset: DocumentAssetEntity)
+
+    /** Narrow rollback primitive (Phase 7J-B.2 Slice 2) - NOT a general "delete an asset" feature
+     * (deliberately not built yet, see [com.example.accounting.application.voucher.VoucherManagementServiceImpl]'s
+     * doc comments). Its only caller is [com.example.accounting.presentation.viewmodel.AccountingViewModel.attachDocumentToVoucher]'s
+     * failure path, cleaning up a just-created, never-successfully-linked [DocumentAssetEntity] row
+     * so a failed attach never leaves an orphaned asset behind. Company-scoped like every delete in
+     * this app. */
+    @Query("DELETE FROM document_assets WHERE companyId = :companyId AND assetId = :assetId")
+    suspend fun deleteDocumentAsset(companyId: String, assetId: String): Int
 
     // ==================== RENDERED DOCUMENT RECORDS (Phase 7D) ====================
     @Query("SELECT * FROM rendered_document_records WHERE companyId = :companyId AND documentId = :documentId ORDER BY generatedAt DESC")
@@ -611,11 +649,40 @@ interface AccountingDao {
     @Query("DELETE FROM voucher_draft_lines WHERE draftId = :draftId")
     suspend fun deleteLinesForVoucherDraft(draftId: String)
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    /** IGNORE, not REPLACE: the `(voucherId, documentAssetId)` unique index (Phase 7J-B.2) means a
+     * duplicate insert would otherwise either crash (ABORT) or silently reassign a fresh
+     * [VoucherDocumentReferenceEntity.referenceId]/[VoucherDocumentReferenceEntity.createdAt] to an
+     * existing link (REPLACE) - IGNORE keeps the original row untouched, matching the service
+     * layer's explicit idempotent-on-duplicate contract in [com.example.accounting.application.voucher.VoucherManagementServiceImpl.attachDocumentReference]. */
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertVoucherDocumentReference(reference: VoucherDocumentReferenceEntity)
 
     @Query("SELECT * FROM voucher_document_references WHERE companyId = :companyId AND voucherId = :voucherId")
     suspend fun getDocumentReferencesForVoucher(companyId: String, voucherId: String): List<VoucherDocumentReferenceEntity>
+
+    /** Unlink only (Phase 7J-B.2) - deletes exactly one `voucher_document_references` row, scoped by
+     * [companyId] so a reference can never be removed by guessing another company's [referenceId].
+     * NEVER deletes [DocumentAssetEntity] or the underlying file - see
+     * [com.example.accounting.application.voucher.VoucherManagementServiceImpl.removeDocumentReference].
+     * Returns the number of rows deleted (0 = not found / wrong company) so the caller can
+     * distinguish "removed" from "nothing to remove". */
+    @Query("DELETE FROM voucher_document_references WHERE companyId = :companyId AND referenceId = :referenceId")
+    suspend fun deleteVoucherDocumentReference(companyId: String, referenceId: String): Int
+
+    /** One joined query (Phase 7J-B.2), never N+1 - a future attachments UI can render a voucher's
+     * full attachment list (thumbnail-relevant metadata included) from a single call. */
+    @Query(
+        """
+        SELECT vdr.referenceId AS referenceId, vdr.voucherId AS voucherId, da.assetId AS documentAssetId,
+               da.type AS type, da.storageReference AS storageReference, da.checksum AS checksum,
+               da.mimeType AS mimeType, da.sizeBytes AS sizeBytes, vdr.createdAt AS attachedAt
+        FROM voucher_document_references vdr
+        INNER JOIN document_assets da ON da.assetId = vdr.documentAssetId
+        WHERE vdr.companyId = :companyId AND vdr.voucherId = :voucherId
+        ORDER BY vdr.createdAt DESC
+        """
+    )
+    suspend fun getVoucherAttachments(companyId: String, voucherId: String): List<VoucherAttachmentRow>
 
     // ==================== Phase 7J-B: Subscription/Entitlements ====================
     @Query("SELECT * FROM company_subscriptions WHERE companyId = :companyId AND financialYearId = :financialYearId LIMIT 1")
@@ -648,4 +715,41 @@ interface AccountingDao {
 
     @Query("DELETE FROM bank_upi_profiles WHERE companyId = :companyId AND bankUpiProfileId = :bankUpiProfileId")
     suspend fun deleteBankUpiProfile(companyId: String, bankUpiProfileId: String): Int
+
+    // ==================== Rule 33: GST Return Dashboard & Filing Foundation ====================
+    @Query("SELECT * FROM gst_returns WHERE companyId = :companyId ORDER BY createdAt DESC")
+    fun getGstReturnsForCompany(companyId: String): Flow<List<GstReturnEntity>>
+
+    @Query("SELECT * FROM gst_returns WHERE companyId = :companyId AND gstReturnId = :gstReturnId LIMIT 1")
+    suspend fun getGstReturnById(companyId: String, gstReturnId: String): GstReturnEntity?
+
+    @Query("SELECT * FROM gst_returns WHERE companyId = :companyId AND periodKey = :periodKey AND returnType = :returnType AND scheme = :scheme LIMIT 1")
+    suspend fun findGstReturn(companyId: String, periodKey: String, returnType: String, scheme: String): GstReturnEntity?
+
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    suspend fun insertGstReturn(gstReturn: GstReturnEntity)
+
+    @Update
+    suspend fun updateGstReturn(gstReturn: GstReturnEntity)
+
+    @Query("SELECT * FROM gst_return_artifacts WHERE gstReturnId = :gstReturnId ORDER BY createdAt ASC")
+    suspend fun getArtifactsForGstReturn(gstReturnId: String): List<GstReturnArtifactEntity>
+
+    @Query("SELECT * FROM gst_return_artifacts WHERE artifactId = :artifactId LIMIT 1")
+    suspend fun getGstReturnArtifactById(artifactId: String): GstReturnArtifactEntity?
+
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    suspend fun insertGstReturnArtifact(artifact: GstReturnArtifactEntity)
+
+    @Query("SELECT * FROM gst_return_sections WHERE gstReturnId = :gstReturnId ORDER BY sectionKey ASC")
+    suspend fun getSectionsForGstReturn(gstReturnId: String): List<GstReturnSectionEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertGstReturnSection(section: GstReturnSectionEntity)
+
+    @Query("SELECT * FROM gst_return_submissions WHERE gstReturnId = :gstReturnId ORDER BY attemptNumber ASC")
+    suspend fun getSubmissionsForGstReturn(gstReturnId: String): List<GstReturnSubmissionEntity>
+
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    suspend fun insertGstReturnSubmission(submission: GstReturnSubmissionEntity)
 }

@@ -72,11 +72,11 @@ fun CreateCompanyDialog(
                 ) {
                     Column {
                         Text(
-                            text = "Add Company Tenant",
+                            text = "Add Company",
                             style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
                         )
                         Text(
-                            text = "Isolated Double-Entry Accounting Core",
+                            text = "Set up a new business to track",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -92,7 +92,7 @@ fun CreateCompanyDialog(
                     value = name,
                     onValueChange = { name = it },
                     label = { Text("Legal Entity Name *") },
-                    placeholder = { Text("e.g. Zenith Automotive Solutions Pvt Ltd") },
+                    supportingText = { Text("The registered legal name of the business") },
                     modifier = Modifier
                         .fillMaxWidth()
                         .testTag("company_name_input")
@@ -104,7 +104,7 @@ fun CreateCompanyDialog(
                     value = tradeName,
                     onValueChange = { tradeName = it },
                     label = { Text("Trade Name (Optional)") },
-                    placeholder = { Text("e.g. Zenith Auto") },
+                    supportingText = { Text("The name customers know the business by") },
                     modifier = Modifier.fillMaxWidth()
                 )
 

@@ -100,6 +100,11 @@ fun ChartOfAccountsScreen(
      * hidden, since a hidden tab gives the user no clue the setting exists. Navigates to the
      * existing, untouched "Accounting Setup" section of Settings - never a second toggle. */
     onOpenAccountingSetup: (() -> Unit)? = null,
+    /** D2: opens the existing [com.example.accounting.presentation.components.VoucherDetailDialog]
+     * for a ledger-statement row's voucher - the row only carries [com.example.accounting.domain.reports.LedgerStatementRow.voucherId],
+     * never a full [com.example.accounting.domain.accounting.Voucher], so resolution against
+     * `uiState.vouchers` happens at the call site, same as every other `onVoucherClick` site. */
+    onVoucherClick: (String) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val visibleTabs = remember(showItemsTab) { CoaTab.entries.filter { it != CoaTab.ITEMS || showItemsTab } }
@@ -117,6 +122,7 @@ fun ChartOfAccountsScreen(
         LedgerStatementDetailView(
             statement = statement,
             onBack = onBackFromStatement,
+            onVoucherClick = onVoucherClick,
             modifier = modifier
         )
     } else {
@@ -623,6 +629,7 @@ fun LedgerRowCard(
 fun LedgerStatementDetailView(
     statement: LedgerStatementReport,
     onBack: () -> Unit,
+    onVoucherClick: (String) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     Column(
@@ -713,6 +720,8 @@ fun LedgerStatementDetailView(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
+                            .clickable { onVoucherClick(row.voucherId) }
+                            .testTag("ledger_statement_row_${row.voucherId}")
                             .padding(horizontal = 8.dp, vertical = 8.dp),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically

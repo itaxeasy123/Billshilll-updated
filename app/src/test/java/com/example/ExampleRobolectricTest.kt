@@ -296,6 +296,7 @@ class ExampleRobolectricTest {
         val result = repository.postGstOnlySale(
             companyId = companyId, financialYearId = fy.financialYearId,
             customerLedgerId = customerLedger.ledgerId, lines = lines,
+            date = java.time.LocalDate.of(2026, 5, 10),
             idempotencyKey = "TEST_GST_ONLY_KEY_1"
         )
 
@@ -337,7 +338,8 @@ class ExampleRobolectricTest {
         val result = repository.postGstOnlySale(
             companyId = "COMP_DOES_NOT_EXIST", financialYearId = "FY_DOES_NOT_EXIST",
             customerLedgerId = "LED_DOES_NOT_EXIST",
-            lines = listOf(TradingLineInput("ITEM_X", "Consulting", "9983", Quantity.fromLong(1), Money.fromRupees(1000L), 18.0))
+            lines = listOf(TradingLineInput("ITEM_X", "Consulting", "9983", Quantity.fromLong(1), Money.fromRupees(1000L), 18.0)),
+            date = java.time.LocalDate.of(2026, 5, 10)
         )
         assertTrue(result is AccountingResult.Failure)
     }
@@ -356,7 +358,8 @@ class ExampleRobolectricTest {
         val result = repository.postGstOnlySale(
             companyId = companyA, financialYearId = fyOfCompanyB.financialYearId,
             customerLedgerId = ledgerOfCompanyA.ledgerId,
-            lines = listOf(TradingLineInput("ITEM_X", "Consulting", "9983", Quantity.fromLong(1), Money.fromRupees(1000L), 18.0))
+            lines = listOf(TradingLineInput("ITEM_X", "Consulting", "9983", Quantity.fromLong(1), Money.fromRupees(1000L), 18.0)),
+            date = java.time.LocalDate.of(2026, 5, 10)
         )
         assertTrue(result is AccountingResult.Failure)
     }

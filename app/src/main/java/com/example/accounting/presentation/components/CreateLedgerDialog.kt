@@ -48,11 +48,12 @@ import com.example.accounting.domain.accounting.AccountGroup
 @Composable
 fun CreateLedgerDialog(
     groups: List<AccountGroup>,
+    initialGroupId: String? = null,
     onDismiss: () -> Unit,
     onCreateLedger: (String, String, Money, DrCr, String, String, String, String, String, String, Double) -> Unit
 ) {
     var ledgerName by remember { mutableStateOf("") }
-    var selectedGroupId by remember { mutableStateOf(groups.firstOrNull()?.groupId ?: "") }
+    var selectedGroupId by remember { mutableStateOf(initialGroupId ?: groups.firstOrNull()?.groupId ?: "") }
     var openingBalanceInput by remember { mutableStateOf("0") }
     var balanceType by remember { mutableStateOf(DrCr.DEBIT) }
     var gstin by remember { mutableStateOf("") }
@@ -89,11 +90,11 @@ fun CreateLedgerDialog(
                 ) {
                     Column {
                         Text(
-                            text = "New Ledger Master",
+                            text = "New Ledger",
                             style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
                         )
                         Text(
-                            text = "Chart of Accounts Definition",
+                            text = "Add a customer, supplier, or expense account",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -109,7 +110,7 @@ fun CreateLedgerDialog(
                     value = ledgerName,
                     onValueChange = { ledgerName = it },
                     label = { Text("Ledger Name *") },
-                    placeholder = { Text("e.g. Infosys Ltd., Axis Bank, Travelling Expense") },
+                    supportingText = { Text("The party, bank, or expense head this ledger tracks") },
                     modifier = Modifier
                         .fillMaxWidth()
                         .testTag("ledger_name_input")
@@ -167,12 +168,12 @@ fun CreateLedgerDialog(
                         FilterChip(
                             selected = balanceType == DrCr.DEBIT,
                             onClick = { balanceType = DrCr.DEBIT },
-                            label = { Text("Dr") }
+                            label = { Text("Debit") }
                         )
                         FilterChip(
                             selected = balanceType == DrCr.CREDIT,
                             onClick = { balanceType = DrCr.CREDIT },
-                            label = { Text("Cr") }
+                            label = { Text("Credit") }
                         )
                     }
                 }

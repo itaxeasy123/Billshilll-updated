@@ -51,6 +51,7 @@ import com.example.accounting.domain.accounting.StandardSystemGroups
 import com.example.accounting.domain.accounting.Voucher
 import com.example.accounting.domain.accounting.VoucherType
 import com.example.accounting.domain.inventory.StockItem
+import com.example.accounting.domain.party.PartyRole
 import com.example.accounting.domain.trading.OutstandingInvoice
 import com.example.accounting.presentation.viewmodel.AccountingViewModel
 import java.time.LocalDate
@@ -63,11 +64,33 @@ fun CreateVoucherDialog(
     vouchers: List<Voucher> = emptyList(),
     outstandingInvoices: List<OutstandingInvoice> = emptyList(),
     companyStateCode: String = "",
+    /** D1a (Company Mode + Account-Only Sale/Purchase) - the same single gating point
+     * ([com.example.accounting.presentation.viewmodel.isInventoryEnabled]) every other Items-
+     * related call site reads. Defaults to `true` so any caller that doesn't yet pass it explicitly
+     * keeps today's item-driven Sale/Purchase behavior unchanged. */
+    isInventoryEnabled: Boolean = true,
     defaultVoucherType: VoucherType = VoucherType.PAYMENT,
+    /** When true, this dialog was opened from a screen already dedicated to one voucher type (e.g.
+     * Sales' "New Sale") - the "Voucher Nature" type switcher is hidden so the user can't wander
+     * into a different voucher type by accident. Left false for genuinely generic entry points
+     * (e.g. Day Book's FAB) where picking a type is the point. */
+    lockedType: Boolean = false,
     onDismiss: () -> Unit,
+    onAddNewParty: (PartyRole) -> Unit = {},
+    onAddNewBankLedger: () -> Unit = {},
     onPostQuickVoucher: (VoucherType, LocalDate, String, String, Money, String, String) -> Unit,
+    /** Save this Contra/Journal/Receipt/Payment as a [com.example.accounting.application.voucher.VoucherDraft]
+     * instead of posting - Phase 7J-B.1. Same flat (type, date, debitLedgerId, creditLedgerId, amount,
+     * narration, refNumber) shape as [onPostQuickVoucher], since both draw from the same generic
+     * double-entry form state. Not offered for Sale/Purchase/Credit-Debit Note this pass - those flows
+     * build GST/stock detail only at post time, so a header-only draft would be lossy (see docs/54). */
+    onSaveAsDraft: (VoucherType, LocalDate, String, String, Money, String, String) -> Unit = { _, _, _, _, _, _, _ -> },
     onPostSaleInvoice: (String, String, List<AccountingViewModel.TradingLineForm>, LocalDate, String, String) -> Unit = { _, _, _, _, _, _ -> },
     onPostPurchaseBill: (String, String, List<AccountingViewModel.TradingLineForm>, LocalDate, String, String) -> Unit = { _, _, _, _, _, _ -> },
+    /** D1a - Sale/Purchase for an ACCOUNT_ONLY company (no Item, no GST): Party ledger, Trade
+     * ledger, amount, date, reference number, narration. */
+    onPostAccountOnlySale: (String, String, Money, LocalDate, String, String) -> Unit = { _, _, _, _, _, _ -> },
+    onPostAccountOnlyPurchase: (String, String, Money, LocalDate, String, String) -> Unit = { _, _, _, _, _, _ -> },
     onPostCreditNote: (String, LocalDate, String, String) -> Unit = { _, _, _, _ -> },
     onPostDebitNote: (String, LocalDate, String, String) -> Unit = { _, _, _, _ -> },
     onPostSettlement: (VoucherType, LocalDate, String, String, Money, String, String, String, List<Pair<String, Money>>) -> Unit = { _, _, _, _, _, _, _, _, _ -> },
@@ -190,6 +213,7 @@ fun CreateVoucherDialog(
 
                 Spacer(modifier = Modifier.height(14.dp))
 
+                if (!lockedType) {
                 Text(
                     text = "Voucher Nature",
                     style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold)
@@ -246,6 +270,7 @@ fun CreateVoucherDialog(
                         )
                     }
                 }
+                }
 
                 Spacer(modifier = Modifier.height(14.dp))
 
@@ -270,7 +295,11 @@ fun CreateVoucherDialog(
                         partyDropdownExpanded = partyDropdownExpanded,
                         onPartyDropdownExpandedChange = { partyDropdownExpanded = it },
                         tradeDropdownExpanded = tradeDropdownExpanded,
-                        onTradeDropdownExpandedChange = { tradeDropdownExpanded = it }
+                        onTradeDropdownExpandedChange = { tradeDropdownExpanded = it },
+                        onAddNewParty = { onAddNewParty(if (isSaleFlow) PartyRole.CUSTOMER else PartyRole.SUPPLIER) },
+                        isInventoryEnabled = isInventoryEnabled,
+                        amountInput = amountInput,
+                        onAmountChange = { amountInput = it }
                     )
 
                     isNoteFlow -> NoteForm(
@@ -304,7 +333,9 @@ fun CreateVoucherDialog(
                         amountInput = settlementAmountInput,
                         onAmountChange = { settlementAmountInput = it },
                         totalAllocated = totalAllocated,
-                        unallocatedRemainder = unallocatedRemainder
+                        unallocatedRemainder = unallocatedRemainder,
+                        onAddNewParty = { onAddNewParty(if (isReceiptFlow) PartyRole.CUSTOMER else PartyRole.SUPPLIER) },
+                        onAddNewBankLedger = onAddNewBankLedger
                     )
 
                     else -> {
@@ -386,17 +417,26 @@ fun CreateVoucherDialog(
                 Spacer(modifier = Modifier.height(14.dp))
 
                 val readyTotal = when {
-                    isTradingFlow -> lines.sumOf { line ->
-                        val item = itemsMap[line.itemId]
-                        val qty = line.quantityInput.toDoubleOrNull() ?: 0.0
-                        val rate = Money.parse(line.rateInput.ifBlank { "0" }).paise
-                        if (item != null) (qty * rate).toLong() else 0L
-                    }.let { Money.fromPaise(it) }
+                    isTradingFlow -> if (isInventoryEnabled) {
+                        lines.sumOf { line ->
+                            val item = itemsMap[line.itemId]
+                            val qty = line.quantityInput.toDoubleOrNull() ?: 0.0
+                            val rate = Money.parse(line.rateInput.ifBlank { "0" }).paise
+                            if (item != null) (qty * rate).toLong() else 0L
+                        }.let { Money.fromPaise(it) }
+                    } else {
+                        amountMoney
+                    }
                     isSettlementFlow -> settlementAmountMoney
                     else -> amountMoney
                 }
                 val isReady = when {
-                    isTradingFlow -> partyLedgerId.isNotBlank() && tradeLedgerId.isNotBlank() && lines.any { it.itemId.isNotBlank() && (it.quantityInput.toDoubleOrNull() ?: 0.0) > 0.0 }
+                    isTradingFlow -> partyLedgerId.isNotBlank() && tradeLedgerId.isNotBlank() &&
+                        if (isInventoryEnabled) {
+                            lines.any { it.itemId.isNotBlank() && (it.quantityInput.toDoubleOrNull() ?: 0.0) > 0.0 }
+                        } else {
+                            amountMoney.isPositive
+                        }
                     isNoteFlow -> originalVoucherId.isNotBlank()
                     isSettlementFlow -> settlementPartyLedgerId.isNotBlank() && settlementCashBankLedgerId.isNotBlank() && settlementAmountMoney.isPositive && unallocatedRemainder.paise >= 0L
                     else -> amountMoney.isPositive && debitLedgerId.isNotBlank() && creditLedgerId.isNotBlank()
@@ -429,26 +469,61 @@ fun CreateVoucherDialog(
 
                 Spacer(modifier = Modifier.height(18.dp))
 
+                // Save as Draft is offered only for the generic double-entry flows (Contra/Journal/
+                // Receipt/Payment) where the form already holds a flat debit/credit ledger pair -
+                // Sale/Purchase/Notes stay immediate-post-only this pass (see docs/54).
+                val canSaveAsDraft = !isTradingFlow && !isNoteFlow && if (isSettlementFlow) {
+                    settlementPartyLedgerId.isNotBlank() && settlementCashBankLedgerId.isNotBlank()
+                } else {
+                    debitLedgerId.isNotBlank() && creditLedgerId.isNotBlank()
+                }
+
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                     TextButton(onClick = onDismiss) { Text("Cancel") }
+                    if (!isTradingFlow && !isNoteFlow) {
+                        Spacer(modifier = Modifier.width(8.dp))
+                        TextButton(
+                            onClick = {
+                                val (draftDebitId, draftCreditId, draftAmount) = if (isSettlementFlow) {
+                                    Triple(
+                                        if (isReceiptFlow) settlementCashBankLedgerId else settlementPartyLedgerId,
+                                        if (isReceiptFlow) settlementPartyLedgerId else settlementCashBankLedgerId,
+                                        settlementAmountMoney
+                                    )
+                                } else {
+                                    Triple(debitLedgerId, creditLedgerId, amountMoney)
+                                }
+                                onSaveAsDraft(
+                                    selectedType, LocalDate.now(), draftDebitId, draftCreditId, draftAmount,
+                                    narration.ifBlank { "Being ${selectedType.displayName.lowercase()} transaction (draft)" },
+                                    referenceNumber
+                                )
+                                onDismiss()
+                            },
+                            enabled = canSaveAsDraft,
+                            modifier = Modifier.testTag("save_as_draft_button")
+                        ) { Text("Save as Draft") }
+                    }
                     Spacer(modifier = Modifier.width(8.dp))
                     Button(
                         onClick = {
                             when {
-                                isSaleFlow -> onPostSaleInvoice(
+                                isSaleFlow && isInventoryEnabled -> onPostSaleInvoice(
                                     partyLedgerId, tradeLedgerId,
                                     lines.filter { it.itemId.isNotBlank() }.map {
                                         AccountingViewModel.TradingLineForm(it.itemId, it.quantityInput.toDoubleOrNull() ?: 0.0, Money.parse(it.rateInput.ifBlank { "0" }), it.supplyNature, it.chargeType)
                                     },
                                     LocalDate.now(), referenceNumber, narration
                                 )
-                                isPurchaseFlow -> onPostPurchaseBill(
+                                isSaleFlow -> onPostAccountOnlySale(partyLedgerId, tradeLedgerId, amountMoney, LocalDate.now(), referenceNumber, narration)
+                                isPurchaseFlow && isInventoryEnabled -> onPostPurchaseBill(
                                     partyLedgerId, tradeLedgerId,
                                     lines.filter { it.itemId.isNotBlank() }.map {
                                         AccountingViewModel.TradingLineForm(it.itemId, it.quantityInput.toDoubleOrNull() ?: 0.0, Money.parse(it.rateInput.ifBlank { "0" }), it.supplyNature, it.chargeType)
                                     },
                                     LocalDate.now(), referenceNumber, narration
                                 )
+                                isPurchaseFlow -> onPostAccountOnlyPurchase(partyLedgerId, tradeLedgerId, amountMoney, LocalDate.now(), referenceNumber, narration)
                                 isCreditNoteFlow -> onPostCreditNote(originalVoucherId, LocalDate.now(), referenceNumber, narration)
                                 isDebitNoteFlow -> onPostDebitNote(originalVoucherId, LocalDate.now(), referenceNumber, narration)
                                 isSettlementFlow -> {

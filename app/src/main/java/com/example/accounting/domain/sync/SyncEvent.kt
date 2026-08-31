@@ -105,7 +105,28 @@ data class SyncGstTransactionDto(
     val igstPaise: Long,
     val cessPaise: Long,
     val direction: String,
-    val lineOrder: Int
+    val lineOrder: Int,
+    /** D1b (GST-Only Purchase + Sales/Purchase Return + GST Fact Hardening) - see
+     * [com.example.accounting.domain.taxation.gst.GstTransaction.chargeType]. Optional at the
+     * schema level ONLY for backward compatibility with an already-queued pre-D1b event (mirrors
+     * [voucherType]'s own precedent) - defaults to "FORWARD_CHARGE", the only value that reproduces
+     * every such event's actual, real behavior (RCM did not exist for GST-only before this). */
+    val chargeType: String = "FORWARD_CHARGE",
+    /** D1b - see [com.example.accounting.domain.taxation.gst.GstTransaction.supplyNature]. Same
+     * backward-compatibility shape as [chargeType]; defaults to "NORMAL". */
+    val supplyNature: String = "NORMAL",
+    /** D1b - see [com.example.accounting.domain.taxation.gst.GstTransaction.transactionGroupId].
+     * Optional only for the same pre-D1b backward-compatibility reason as [chargeType]/[supplyNature] -
+     * every real D1b-or-later event always supplies it. A `null`/blank value falls back to this
+     * line's own [gstTransactionId] server-side (a genuine single-row group), never fabricated. */
+    val transactionGroupId: String? = null,
+    /** D1b - see [com.example.accounting.domain.taxation.gst.GstTransaction.transactionDate].
+     * `null` for the accounting-integrated path (unchanged - that path's real date is
+     * [SyncVoucherDto.date]); always a real ISO-8601 value for the GST-only path. */
+    val transactionDate: String? = null,
+    /** D1b - see [com.example.accounting.domain.taxation.gst.GstTransaction.partyGstRegistrationStatus].
+     * `null` means UNKNOWN, never guessed. */
+    val partyGstRegistrationStatus: String? = null
 )
 
 @JsonClass(generateAdapter = true)

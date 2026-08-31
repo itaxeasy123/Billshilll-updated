@@ -3,6 +3,7 @@ package com.example.accounting.domain.trading
 import com.example.accounting.core.common.DrCr
 import com.example.accounting.core.common.Money
 import com.example.accounting.core.common.Quantity
+import com.example.accounting.domain.accounting.GstRegistrationStatus
 import com.example.accounting.domain.accounting.JournalItem
 import com.example.accounting.domain.accounting.RoundOffEngine
 import com.example.accounting.domain.accounting.VoucherType
@@ -130,9 +131,15 @@ object TradingWorkflowEngine {
         customerGstin: String,
         companyStateCode: String,
         placeOfSupply: String,
-        lines: List<TradingLineInput>
+        lines: List<TradingLineInput>,
+        /** D1b - the real invoice/business date for this GST-only Sale; see [GstTransaction.transactionDate]. */
+        date: LocalDate,
+        /** D1b - the customer's [GstRegistrationStatus] at posting time; see [GstTransaction.partyGstRegistrationStatus]. */
+        partyGstRegistrationStatus: GstRegistrationStatus?
     ): List<GstTransaction> {
         require(lines.isNotEmpty()) { "At least one line item is required." }
+        // D1b: one correlation id shared by every line of THIS Sale - see GstTransaction.transactionGroupId.
+        val groupId = UUID.randomUUID().toString()
         return lines.mapIndexed { index, line ->
             val lineTaxable = VoucherStockLine.computeAmount(line.quantity, line.rate)
             val breakdown = GstCalculationEngine.calculateDetailed(
@@ -165,9 +172,179 @@ object TradingWorkflowEngine {
                 igst = breakdown.igstAmount,
                 cess = breakdown.cessAmount,
                 direction = GstDirection.OUTPUT,
-                lineOrder = index + 1
+                lineOrder = index + 1,
+                supplyNature = line.supplyNature,
+                transactionGroupId = groupId,
+                transactionDate = date,
+                partyGstRegistrationStatus = partyGstRegistrationStatus
             )
         }
+    }
+
+    /**
+     * D1b (GST-Only Purchase + Sales/Purchase Return + GST Fact Hardening) - the Purchase
+     * counterpart of [buildGstOnlySale], reusing the exact same [GstCalculationEngine] call and
+     * per-line facts. Unlike Sale, a Purchase line's [TradingLineInput.chargeType] is meaningful
+     * (Rule 31/RCM) and is threaded through onto each [GstTransaction] exactly as [build] already
+     * does for the accounting-integrated Purchase path - RCM here is exactly as explicit and
+     * un-inferred as it already is there (same `require()` backstop, never derived from
+     * [GstRegistrationStatus]/party type/vendor type/GSTIN/tax rate).
+     */
+    fun buildGstOnlyPurchase(
+        companyId: String,
+        financialYearId: String,
+        supplierLedgerId: String,
+        supplierGstin: String,
+        companyStateCode: String,
+        placeOfSupply: String,
+        lines: List<TradingLineInput>,
+        date: LocalDate,
+        partyGstRegistrationStatus: GstRegistrationStatus?
+    ): List<GstTransaction> {
+        require(lines.isNotEmpty()) { "At least one line item is required." }
+        // Rule 31 (Purchase/RCM Foundation): the same authoritative backstop `build()` enforces for
+        // the accounting-integrated Purchase path - RCM only ever valid on a Taxable line.
+        require(lines.none { it.chargeType == GstChargeType.REVERSE_CHARGE && it.supplyNature != GstSupplyNature.NORMAL }) {
+            "Reverse charge requires a Taxable line - it cannot be combined with Zero Rated/Exempt/Nil Rated."
+        }
+        val groupId = UUID.randomUUID().toString()
+        return lines.mapIndexed { index, line ->
+            val lineTaxable = VoucherStockLine.computeAmount(line.quantity, line.rate)
+            val breakdown = GstCalculationEngine.calculateDetailed(
+                GstTransactionFacts(
+                    taxableAmount = lineTaxable,
+                    gstRatePercent = line.gstRatePercent,
+                    cessRatePercent = line.cessRatePercent,
+                    supplierStateCode = companyStateCode,
+                    placeOfSupply = placeOfSupply,
+                    supplyNature = line.supplyNature
+                )
+            )
+            GstTransaction(
+                gstTransactionId = UUID.randomUUID().toString(),
+                companyId = companyId,
+                financialYearId = financialYearId,
+                voucherId = null,
+                voucherType = VoucherType.PURCHASE,
+                partyLedgerId = supplierLedgerId,
+                partyGstin = supplierGstin,
+                placeOfSupply = placeOfSupply,
+                supplyType = breakdown.supplyType,
+                itemId = line.itemId,
+                hsnSacCode = line.hsnSacCode,
+                quantity = line.quantity,
+                taxableAmount = breakdown.taxableAmount,
+                gstRatePercent = line.gstRatePercent,
+                cgst = breakdown.cgstAmount,
+                sgst = breakdown.sgstAmount,
+                igst = breakdown.igstAmount,
+                cess = breakdown.cessAmount,
+                direction = GstDirection.INPUT,
+                lineOrder = index + 1,
+                chargeType = line.chargeType,
+                supplyNature = line.supplyNature,
+                transactionGroupId = groupId,
+                transactionDate = date,
+                partyGstRegistrationStatus = partyGstRegistrationStatus
+            )
+        }
+    }
+
+    /**
+     * D1b - GST-only Credit Note (against a GST-only Sale) / Debit Note (against a GST-only
+     * Purchase). The voucherless counterpart of [buildNote]'s GST-transaction reversal: since a
+     * GST-only transaction has no [JournalItem]/[VoucherStockLine] to reverse, this only replicates
+     * that function's GST-row semantics - NEGATED taxable/CGST/SGST/IGST/CESS at the SAME direction
+     * as the original (never a new opposite-direction transaction; see [buildNote]'s own KDoc for
+     * why this, and not a naive full-field negation, is the correct GST-return representation), with
+     * [noteVoucherType] stamped onto every row exactly as [buildNote] already does. [partyGstin]/
+     * [GstTransaction.partyGstRegistrationStatus] are carried forward from each original row
+     * unchanged (the note describes an adjustment against that exact original transaction, not a
+     * new independent supply) - only [GstTransaction.transactionDate] (the note's own posting date)
+     * and the identifiers ([gstTransactionId]/[GstTransaction.transactionGroupId]) are new.
+     */
+    fun buildGstOnlyNote(
+        noteVoucherType: VoucherType,
+        originalGstTransactions: List<GstTransaction>,
+        date: LocalDate
+    ): List<GstTransaction> {
+        require(originalGstTransactions.isNotEmpty()) { "The original GST-only transaction has no lines to reverse." }
+        val groupId = UUID.randomUUID().toString()
+        return originalGstTransactions.mapIndexed { index, gt ->
+            gt.copy(
+                gstTransactionId = UUID.randomUUID().toString(),
+                voucherId = null,
+                voucherType = noteVoucherType,
+                taxableAmount = -gt.taxableAmount,
+                cgst = -gt.cgst,
+                sgst = -gt.sgst,
+                igst = -gt.igst,
+                cess = -gt.cess,
+                lineOrder = index + 1,
+                transactionGroupId = groupId,
+                transactionDate = date
+            )
+        }
+    }
+
+    /**
+     * D1a (Company Mode + Account-Only Sale/Purchase) - a Sale for a company whose
+     * [com.example.accounting.domain.company.AccountingMode] is `ACCOUNT_ONLY` (no inventory
+     * tracking): Party ledger + Sales ledger + a single amount, no Item/Quantity/Rate, no
+     * [com.example.accounting.domain.inventory.VoucherStockLine]s, no GST calculation/
+     * [GstTransaction]s. A plain two-line balanced posting, the same shape [build] produces for its
+     * party+trade lines, just without the item-driven tax/stock machinery this company has no use
+     * for. Deliberately a separate, small function (mirrors [buildGstOnlySale]'s own precedent)
+     * rather than threading a nullable-item branch through [build], which stays exactly as
+     * item-driven as before for every inventory-tracking company.
+     */
+    fun buildAccountOnlySale(
+        voucherId: String, companyId: String, financialYearId: String,
+        customerLedgerId: String, customerName: String,
+        salesLedgerId: String, salesLedgerName: String,
+        amount: Money
+    ): TradingWorkflowResult = buildAccountOnly(
+        isSale = true, voucherId = voucherId, companyId = companyId, financialYearId = financialYearId,
+        partyLedgerId = customerLedgerId, partyName = customerName,
+        tradeLedgerId = salesLedgerId, tradeLedgerName = salesLedgerName, amount = amount
+    )
+
+    /** D1a - Purchase counterpart of [buildAccountOnlySale]; see its doc comment. */
+    fun buildAccountOnlyPurchase(
+        voucherId: String, companyId: String, financialYearId: String,
+        supplierLedgerId: String, supplierName: String,
+        purchaseLedgerId: String, purchaseLedgerName: String,
+        amount: Money
+    ): TradingWorkflowResult = buildAccountOnly(
+        isSale = false, voucherId = voucherId, companyId = companyId, financialYearId = financialYearId,
+        partyLedgerId = supplierLedgerId, partyName = supplierName,
+        tradeLedgerId = purchaseLedgerId, tradeLedgerName = purchaseLedgerName, amount = amount
+    )
+
+    private fun buildAccountOnly(
+        isSale: Boolean, voucherId: String, companyId: String, financialYearId: String,
+        partyLedgerId: String, partyName: String,
+        tradeLedgerId: String, tradeLedgerName: String,
+        amount: Money
+    ): TradingWorkflowResult {
+        require(amount.isPositive) { "Amount must be greater than zero." }
+        val partyLineType = if (isSale) DrCr.DEBIT else DrCr.CREDIT
+        val tradeLineType = if (isSale) DrCr.CREDIT else DrCr.DEBIT
+        val journalItems = listOf(
+            JournalItem(
+                itemId = UUID.randomUUID().toString(), voucherId = voucherId, companyId = companyId,
+                financialYearId = financialYearId, ledgerId = partyLedgerId, ledgerName = partyName,
+                type = partyLineType, amount = amount,
+                narration = if (isSale) "Customer invoice debit" else "Supplier bill credit", lineOrder = 1
+            ),
+            JournalItem(
+                itemId = UUID.randomUUID().toString(), voucherId = voucherId, companyId = companyId,
+                financialYearId = financialYearId, ledgerId = tradeLedgerId, ledgerName = tradeLedgerName,
+                type = tradeLineType, amount = amount,
+                narration = if (isSale) "Sales revenue (account-only)" else "Purchase value (account-only)", lineOrder = 2
+            )
+        )
+        return TradingWorkflowResult(journalItems, emptyList(), emptyList(), amount)
     }
 
     fun buildPurchase(
@@ -284,7 +461,11 @@ object TradingWorkflowEngine {
                 supplyType = breakdown.supplyType, itemId = line.itemId, hsnSacCode = line.hsnSacCode,
                 quantity = line.quantity, taxableAmount = breakdown.taxableAmount, gstRatePercent = line.gstRatePercent,
                 cgst = breakdown.cgstAmount, sgst = breakdown.sgstAmount, igst = breakdown.igstAmount, cess = breakdown.cessAmount,
-                direction = direction, lineOrder = index + 1, chargeType = line.chargeType
+                direction = direction, lineOrder = index + 1, chargeType = line.chargeType,
+                supplyNature = line.supplyNature,
+                // D1b: the accounting-integrated path already has an unambiguous correlation id -
+                // its own real voucherId - so this is just that same value, never a second one.
+                transactionGroupId = voucherId
             )
         }
 
@@ -380,12 +561,22 @@ object TradingWorkflowEngine {
      * original (so the stock value removed/added by the original posting is restored exactly), and
      * GST-transaction rows carrying NEGATED amounts at the SAME direction as the original (the
      * standard GST-return representation: a credit/debit note nets against the original outward/
-     * inward supply figure, it does not become a new opposite-direction transaction). The original
-     * voucher/journal items/stock lines/GST transactions are never read back INTO this function's
-     * output - only used to derive it; nothing about the original row is ever modified.
+     * inward supply figure, it does not become a new opposite-direction transaction - confirmed
+     * correct by [com.example.accounting.data.repository.AccountingRepository.buildGstReturnSections],
+     * which buckets purely by direction/supplyType/partyGstin, so this was never changed). The
+     * original voucher/journal items/stock lines/GST transactions are never read back INTO this
+     * function's output - only used to derive it; nothing about the original row is ever modified.
+     *
+     * Rule 32A hardening - [noteVoucherType] (CREDIT_NOTE/DEBIT_NOTE, supplied by the caller, the
+     * same value it puts on the actual [com.example.accounting.domain.accounting.Voucher]) is now
+     * stamped onto every copied GST row too. Before this, `gt.copy()` silently inherited the
+     * ORIGINAL Sale/Purchase's `voucherType`, so a Credit Note's GST rows still read `SALES` -
+     * harmless for today's section bucketing (which never reads this field) but a latent trap for
+     * any future CDNR-specific reporting that would naturally filter by it.
      */
     fun buildNote(
         noteVoucherId: String,
+        noteVoucherType: VoucherType,
         originalJournalItems: List<JournalItem>,
         originalStockLines: List<VoucherStockLine>,
         originalGstTransactions: List<GstTransaction>
@@ -411,12 +602,16 @@ object TradingWorkflowEngine {
             gt.copy(
                 gstTransactionId = UUID.randomUUID().toString(),
                 voucherId = noteVoucherId,
+                voucherType = noteVoucherType,
                 taxableAmount = -gt.taxableAmount,
                 cgst = -gt.cgst,
                 sgst = -gt.sgst,
                 igst = -gt.igst,
                 cess = -gt.cess,
-                lineOrder = index + 1
+                lineOrder = index + 1,
+                // D1b: the note is its own real voucher, so it is its own correlation id - same
+                // "transactionGroupId mirrors the real voucherId" rule as the rest of this path.
+                transactionGroupId = noteVoucherId
             )
         }
         val totalAmount = originalJournalItems.filter { it.type == DrCr.DEBIT }.fold(Money.ZERO) { acc, i -> acc + i.amount }

@@ -58,7 +58,9 @@ internal fun SettlementForm(
     amountInput: String,
     onAmountChange: (String) -> Unit,
     totalAllocated: Money,
-    unallocatedRemainder: Money
+    unallocatedRemainder: Money,
+    onAddNewParty: () -> Unit = {},
+    onAddNewBankLedger: () -> Unit = {}
 ) {
     var cashBankDropdownExpanded by remember { mutableStateOf(false) }
     val ledgersById = remember(eligibleParties, cashBankLedgers) { (eligibleParties + cashBankLedgers).associateBy { it.ledgerId } }
@@ -81,6 +83,10 @@ internal fun SettlementForm(
             eligibleParties.forEach { led ->
                 DropdownMenuItem(text = { Text(led.name) }, onClick = { onPartyLedgerChange(led.ledgerId); onExpandedChange(false) })
             }
+            DropdownMenuItem(
+                text = { Text("+ Add New ${if (isReceipt) "Customer" else "Supplier"}", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold) },
+                onClick = { onExpandedChange(false); onAddNewParty() }
+            )
         }
     }
 
@@ -132,6 +138,10 @@ internal fun SettlementForm(
             cashBankLedgers.forEach { led ->
                 DropdownMenuItem(text = { Text(led.name) }, onClick = { onCashBankLedgerChange(led.ledgerId); cashBankDropdownExpanded = false })
             }
+            DropdownMenuItem(
+                text = { Text("+ Add New Bank Account", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold) },
+                onClick = { cashBankDropdownExpanded = false; onAddNewBankLedger() }
+            )
         }
     }
 

@@ -32,9 +32,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import com.example.accounting.domain.profile.PinCodeLookupResult
 import com.example.accounting.domain.rendering.BusinessProfile
 import com.example.accounting.domain.rendering.IndividualProfile
 import com.example.accounting.presentation.components.ActionButton
+import com.example.accounting.presentation.components.AddressPinCodeFields
 import com.example.accounting.presentation.components.FormField
 import com.example.accounting.presentation.components.SectionCard
 import com.example.accounting.presentation.theme.Spacing
@@ -51,11 +53,15 @@ import com.example.accounting.presentation.theme.Spacing
 fun ProfileScreen(
     businessProfile: BusinessProfile?,
     individualProfile: IndividualProfile?,
-    onSaveBusinessProfile: (businessName: String, legalName: String, address: String, phone: String, email: String, gstin: String, pan: String) -> Unit,
-    onSaveIndividualProfile: (name: String, address: String, phone: String, email: String, pan: String) -> Unit,
+    isPinCodeLookupInProgress: Boolean = false,
+    pinCodeLookupResult: PinCodeLookupResult? = null,
+    onLookupPinCode: (String) -> Unit = {},
+    onSaveBusinessProfile: (businessName: String, legalName: String, address: String, pinCode: String, city: String, state: String, country: String, phone: String, email: String, gstin: String, pan: String) -> Unit,
+    onSaveIndividualProfile: (name: String, address: String, pinCode: String, city: String, state: String, country: String, phone: String, email: String, pan: String) -> Unit,
     onOpenImportData: () -> Unit,
     onOpenSubscription: () -> Unit,
     onOpenCompanyAndSync: () -> Unit,
+    onOpenBusinessSetupWizard: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     Column(
@@ -67,8 +73,16 @@ fun ProfileScreen(
     ) {
         Text("Profile & Business Setup", style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold))
 
-        BusinessProfileSection(businessProfile, onSaveBusinessProfile)
-        IndividualProfileSection(individualProfile, onSaveIndividualProfile)
+        SectionCard(
+            onClick = onOpenBusinessSetupWizard,
+            title = "Business Setup Wizard",
+            subtitle = "Guided step-by-step setup - GST, bank/payment, branding, invoice settings"
+        ) {
+            Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = null)
+        }
+
+        BusinessProfileSection(businessProfile, isPinCodeLookupInProgress, pinCodeLookupResult, onLookupPinCode, onSaveBusinessProfile)
+        IndividualProfileSection(individualProfile, isPinCodeLookupInProgress, pinCodeLookupResult, onLookupPinCode, onSaveIndividualProfile)
 
         SectionCard(onClick = onOpenImportData, title = "Import & Scan", subtitle = "CSV/JSON import, scan a receipt") {
             Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = null)
@@ -104,15 +118,29 @@ private fun ProfileSectionHeader(icon: androidx.compose.ui.graphics.vector.Image
 @Composable
 private fun BusinessProfileSection(
     profile: BusinessProfile?,
-    onSave: (String, String, String, String, String, String, String) -> Unit
+    isPinCodeLookupInProgress: Boolean,
+    pinCodeLookupResult: PinCodeLookupResult?,
+    onLookupPinCode: (String) -> Unit,
+    onSave: (String, String, String, String, String, String, String, String, String, String, String) -> Unit
 ) {
     var businessName by remember(profile) { mutableStateOf(profile?.businessName ?: "") }
     var legalName by remember(profile) { mutableStateOf(profile?.legalName ?: "") }
     var address by remember(profile) { mutableStateOf(profile?.address ?: "") }
+    var pinCode by remember(profile) { mutableStateOf(profile?.pinCode ?: "") }
+    var city by remember(profile) { mutableStateOf(profile?.city ?: "") }
+    var state by remember(profile) { mutableStateOf(profile?.state ?: "") }
+    var country by remember(profile) { mutableStateOf(profile?.country ?: "") }
     var phone by remember(profile) { mutableStateOf(profile?.phone ?: "") }
     var email by remember(profile) { mutableStateOf(profile?.email ?: "") }
     var gstin by remember(profile) { mutableStateOf(profile?.gstin ?: "") }
     var pan by remember(profile) { mutableStateOf(profile?.pan ?: "") }
+
+    androidx.compose.runtime.LaunchedEffect(pinCodeLookupResult) {
+        val result = pinCodeLookupResult
+        if (result != null && result.success && result.pinCode == pinCode) {
+            city = result.city; state = result.state; country = result.country
+        }
+    }
 
     SectionCard(elevated = true) {
         ProfileSectionHeader(Icons.Default.Business, "Business Profile")
@@ -126,7 +154,17 @@ private fun BusinessProfileSection(
             FormField(value = email, onValueChange = { email = it }, label = "Email", keyboardType = KeyboardType.Email, modifier = Modifier.weight(1f))
         }
         Spacer(modifier = Modifier.height(Spacing.sm))
-        FormField(value = address, onValueChange = { address = it }, label = "Address", modifier = Modifier.fillMaxWidth())
+        AddressPinCodeFields(
+            address = address, onAddressChange = { address = it },
+            pinCode = pinCode, onPinCodeChange = { pinCode = it },
+            city = city, onCityChange = { city = it },
+            state = state, onStateChange = { state = it },
+            country = country, onCountryChange = { country = it },
+            isLookingUp = isPinCodeLookupInProgress,
+            lookupErrorMessage = pinCodeLookupResult?.takeIf { it.pinCode == pinCode && !it.success }?.errorMessage,
+            onLookupPinCode = onLookupPinCode,
+            modifier = Modifier.fillMaxWidth()
+        )
         Spacer(modifier = Modifier.height(Spacing.sm))
         Row(horizontalArrangement = Arrangement.spacedBy(Spacing.sm)) {
             FormField(value = gstin, onValueChange = { gstin = it }, label = "GSTIN", modifier = Modifier.weight(1f))
@@ -135,7 +173,7 @@ private fun BusinessProfileSection(
         Spacer(modifier = Modifier.height(Spacing.md))
         ActionButton(
             text = "Save Business Profile",
-            onClick = { onSave(businessName, legalName, address, phone, email, gstin, pan) },
+            onClick = { onSave(businessName, legalName, address, pinCode, city, state, country, phone, email, gstin, pan) },
             enabled = businessName.isNotBlank(),
             modifier = Modifier.fillMaxWidth()
         )
@@ -145,13 +183,27 @@ private fun BusinessProfileSection(
 @Composable
 private fun IndividualProfileSection(
     profile: IndividualProfile?,
-    onSave: (String, String, String, String, String) -> Unit
+    isPinCodeLookupInProgress: Boolean,
+    pinCodeLookupResult: PinCodeLookupResult?,
+    onLookupPinCode: (String) -> Unit,
+    onSave: (String, String, String, String, String, String, String, String, String) -> Unit
 ) {
     var name by remember(profile) { mutableStateOf(profile?.name ?: "") }
     var address by remember(profile) { mutableStateOf(profile?.address ?: "") }
+    var pinCode by remember(profile) { mutableStateOf(profile?.pinCode ?: "") }
+    var city by remember(profile) { mutableStateOf(profile?.city ?: "") }
+    var state by remember(profile) { mutableStateOf(profile?.state ?: "") }
+    var country by remember(profile) { mutableStateOf(profile?.country ?: "") }
     var phone by remember(profile) { mutableStateOf(profile?.phone ?: "") }
     var email by remember(profile) { mutableStateOf(profile?.email ?: "") }
     var pan by remember(profile) { mutableStateOf(profile?.pan ?: "") }
+
+    androidx.compose.runtime.LaunchedEffect(pinCodeLookupResult) {
+        val result = pinCodeLookupResult
+        if (result != null && result.success && result.pinCode == pinCode) {
+            city = result.city; state = result.state; country = result.country
+        }
+    }
 
     SectionCard(elevated = true) {
         ProfileSectionHeader(Icons.Default.Person, "Individual Profile")
@@ -163,13 +215,23 @@ private fun IndividualProfileSection(
             FormField(value = email, onValueChange = { email = it }, label = "Email", keyboardType = KeyboardType.Email, modifier = Modifier.weight(1f))
         }
         Spacer(modifier = Modifier.height(Spacing.sm))
-        FormField(value = address, onValueChange = { address = it }, label = "Address", modifier = Modifier.fillMaxWidth())
+        AddressPinCodeFields(
+            address = address, onAddressChange = { address = it },
+            pinCode = pinCode, onPinCodeChange = { pinCode = it },
+            city = city, onCityChange = { city = it },
+            state = state, onStateChange = { state = it },
+            country = country, onCountryChange = { country = it },
+            isLookingUp = isPinCodeLookupInProgress,
+            lookupErrorMessage = pinCodeLookupResult?.takeIf { it.pinCode == pinCode && !it.success }?.errorMessage,
+            onLookupPinCode = onLookupPinCode,
+            modifier = Modifier.fillMaxWidth()
+        )
         Spacer(modifier = Modifier.height(Spacing.sm))
         FormField(value = pan, onValueChange = { pan = it }, label = "PAN", modifier = Modifier.fillMaxWidth())
         Spacer(modifier = Modifier.height(Spacing.md))
         ActionButton(
             text = "Save Individual Profile",
-            onClick = { onSave(name, address, phone, email, pan) },
+            onClick = { onSave(name, address, pinCode, city, state, country, phone, email, pan) },
             enabled = name.isNotBlank(),
             modifier = Modifier.fillMaxWidth()
         )

@@ -270,12 +270,34 @@ class Phase7ETestSuite {
 
     @Test
     fun testExportFormat_unsupportedCombinationRejectedNotSilentlyWrong() = runBlocking {
+        // Rule 32-follow-up (report PDF/CSV parity): Profit & Loss CSV is now supported (was the
+        // combination this test used to prove got rejected) - GSTR_JSON remains genuinely
+        // unsupported for Profit & Loss (only GST_TRANSACTIONS supports it), so that's the
+        // combination this test now proves is still correctly rejected, not silently produced wrong.
+        val dao = freshDao()
+        dao.seed()
+        val repo = AccountingRepository(dao)
+        val result = repo.exportProfitAndLossAs(companyId, fyId, ExportFormat.GSTR_JSON)
+        assertTrue(result is AccountingResult.Failure)
+        assertTrue((result as AccountingResult.Failure).error is AppError.ExportFormatUnsupported)
+    }
+
+    @Test
+    fun testExportProfitAndLossAs_csv_isNowSupported() = runBlocking {
         val dao = freshDao()
         dao.seed()
         val repo = AccountingRepository(dao)
         val result = repo.exportProfitAndLossAs(companyId, fyId, ExportFormat.CSV)
-        assertTrue(result is AccountingResult.Failure)
-        assertTrue((result as AccountingResult.Failure).error is AppError.ExportFormatUnsupported)
+        assertTrue("Profit & Loss CSV export must now be supported (report PDF/CSV parity)", result is AccountingResult.Success)
+    }
+
+    @Test
+    fun testExportBalanceSheetAs_csv_isNowSupported() = runBlocking {
+        val dao = freshDao()
+        dao.seed()
+        val repo = AccountingRepository(dao)
+        val result = repo.exportBalanceSheetAs(companyId, fyId, ExportFormat.CSV)
+        assertTrue("Balance Sheet CSV export must now be supported (report PDF/CSV parity)", result is AccountingResult.Success)
     }
 
     // ==========================================

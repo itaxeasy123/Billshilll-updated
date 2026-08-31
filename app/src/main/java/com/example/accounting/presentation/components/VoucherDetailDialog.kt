@@ -39,13 +39,22 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.example.accounting.core.common.DrCr
+import com.example.accounting.data.local.dao.VoucherAttachmentRow
 import com.example.accounting.domain.accounting.Voucher
 
 @Composable
 fun VoucherDetailDialog(
     voucher: Voucher,
     onDismiss: () -> Unit,
-    onDeleteVoucher: ((Voucher) -> Unit)? = null
+    onDeleteVoucher: ((Voucher) -> Unit)? = null,
+    /** Phase 7J-B.2 (Slice 2) attachment plumbing - all optional/no-op-defaulted so every other
+     * existing call site of this dialog keeps compiling untouched. */
+    attachments: List<VoucherAttachmentRow> = emptyList(),
+    isAttachmentsLoading: Boolean = false,
+    isAttaching: Boolean = false,
+    removingAttachmentReferenceId: String? = null,
+    onAttachClick: () -> Unit = {},
+    onRemoveAttachment: (VoucherAttachmentRow) -> Unit = {}
 ) {
     Dialog(
         onDismissRequest = onDismiss,
@@ -176,6 +185,17 @@ fun VoucherDetailDialog(
                     Text(voucher.totalDebits.formatPlain(), style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary), modifier = Modifier.weight(1f))
                     Text(voucher.totalCredits.formatPlain(), style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.secondary), modifier = Modifier.weight(1f))
                 }
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                AttachmentSection(
+                    attachments = attachments,
+                    isLoading = isAttachmentsLoading,
+                    isAttaching = isAttaching,
+                    removingReferenceId = removingAttachmentReferenceId,
+                    onAttachClick = onAttachClick,
+                    onRemoveAttachment = onRemoveAttachment
+                )
 
                 Spacer(modifier = Modifier.height(14.dp))
 

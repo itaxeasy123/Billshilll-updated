@@ -47,6 +47,7 @@ class ProfileApplicationServiceTestSuite {
         override suspend fun updateBusinessProfile(
             companyId: String, businessProfileId: String, businessName: String, legalName: String,
             constitutionType: com.example.accounting.domain.rendering.ConstitutionType, address: String,
+            pinCode: String, city: String, state: String, country: String,
             phone: String, email: String, website: String, gstin: String, pan: String, tan: String, udyam: String, logoAssetId: String?,
             bankName: String, bankAccountNumber: String, bankIfsc: String, bankBranch: String, upiId: String,
             qrCodeAssetId: String?, signatureAssetId: String?, termsAndConditions: String, updatedAt: Long
@@ -55,6 +56,7 @@ class ProfileApplicationServiceTestSuite {
             if (existing.businessProfileId != businessProfileId) return
             businessProfiles[companyId] = existing.copy(
                 businessName = businessName, legalName = legalName, constitutionType = constitutionType, address = address,
+                pinCode = pinCode, city = city, state = state, country = country,
                 phone = phone, email = email, website = website, gstin = gstin, pan = pan, tan = tan, udyam = udyam,
                 logoAssetId = logoAssetId, bankName = bankName,
                 bankAccountNumber = bankAccountNumber, bankIfsc = bankIfsc, bankBranch = bankBranch, upiId = upiId,
@@ -67,13 +69,15 @@ class ProfileApplicationServiceTestSuite {
         override suspend fun getIndividualProfile(companyId: String) = individualProfiles[companyId]
         override suspend fun insertIndividualProfile(profile: IndividualProfileEntity) { individualProfiles[profile.companyId] = profile }
         override suspend fun updateIndividualProfile(
-            companyId: String, individualProfileId: String, name: String, address: String, pan: String,
+            companyId: String, individualProfileId: String, name: String, address: String,
+            pinCode: String, city: String, state: String, country: String, pan: String,
             phone: String, email: String, signatureAssetId: String?, termsAndConditions: String, updatedAt: Long
         ) {
             val existing = individualProfiles[companyId] ?: return
             if (existing.individualProfileId != individualProfileId) return
             individualProfiles[companyId] = existing.copy(
-                name = name, address = address, pan = pan, phone = phone, email = email,
+                name = name, address = address, pinCode = pinCode, city = city, state = state, country = country,
+                pan = pan, phone = phone, email = email,
                 signatureAssetId = signatureAssetId, termsAndConditions = termsAndConditions, updatedAt = updatedAt
             )
         }

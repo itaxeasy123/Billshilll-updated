@@ -69,10 +69,33 @@ import com.example.accounting.domain.sync.SyncOperation
 import com.example.accounting.domain.sync.SyncPartyDto
 import com.example.accounting.domain.sync.SyncTradeDocumentDto
 import com.example.accounting.domain.sync.SyncTradeDocumentLineDto
+import com.example.accounting.domain.taxation.gst.GstChargeType
 import com.example.accounting.domain.taxation.gst.GstDirection
 import com.example.accounting.domain.taxation.gst.GstFilingPeriod
 import com.example.accounting.domain.taxation.gst.GstLedgerIds
 import com.example.accounting.domain.taxation.gst.GstTransaction
+import com.example.accounting.domain.taxation.gst.SupplyType
+import com.example.accounting.data.local.entity.GstReturnArtifactEntity
+import com.example.accounting.data.local.entity.GstReturnEntity
+import com.example.accounting.data.local.entity.GstReturnSectionEntity
+import com.example.accounting.data.local.entity.GstReturnSubmissionEntity
+import com.example.accounting.domain.taxation.gstreturn.GstFilingMode
+import com.example.accounting.domain.taxation.gstreturn.GstOnlineFilingGateway
+import com.example.accounting.domain.taxation.gstreturn.GstPeriod
+import com.example.accounting.domain.taxation.gstreturn.GstQuarter
+import com.example.accounting.domain.taxation.gstreturn.GstReturn
+import com.example.accounting.domain.taxation.gstreturn.GstReturnArtifact
+import com.example.accounting.domain.taxation.gstreturn.GstReturnArtifactType
+import com.example.accounting.domain.taxation.gstreturn.GstReturnPeriodicity
+import com.example.accounting.domain.taxation.gstreturn.GstReturnSection
+import com.example.accounting.domain.taxation.gstreturn.GstReturnSectionStatus
+import com.example.accounting.domain.taxation.gstreturn.GstReturnStatus
+import com.example.accounting.domain.taxation.gstreturn.GstReturnStatusTransitions
+import com.example.accounting.domain.taxation.gstreturn.GstReturnSubmission
+import com.example.accounting.domain.taxation.gstreturn.GstReturnType
+import com.example.accounting.domain.taxation.gstreturn.GstScheme
+import com.example.accounting.domain.taxation.gstreturn.UnconfiguredGstOnlineFilingGateway
+import com.squareup.moshi.Moshi
 import com.example.accounting.domain.accounting.AccountGroup
 import com.example.accounting.domain.accounting.Branch
 import com.example.accounting.domain.accounting.DoubleEntryValidator
@@ -179,6 +202,15 @@ class AccountingRepository(
 ) {
 
     private val dbTransaction: DatabaseTransaction? = db?.let { DatabaseTransaction(it, dao) }
+
+    // Rule 33 - reuses the exact same Moshi "Map<String, Any?>" approach already established by
+    // ExportJsonSerializer/GstrJsonSerializer, never a new JSON dependency/framework.
+    private val gstReturnMoshi: Moshi = Moshi.Builder().build()
+    private val gstReturnMapType = com.squareup.moshi.Types.newParameterizedType(Map::class.java, String::class.java, Any::class.java)
+    private val gstReturnJsonAdapter = gstReturnMoshi.adapter<Map<String, Any?>>(gstReturnMapType)
+    // A GST portal response is a JSON object; parsing it as a generic string-keyed map is a real,
+    // schema-agnostic well-formedness check - never a guess at the actual (unknown) response shape.
+    private val genericJsonAdapter = gstReturnJsonAdapter
 
     private fun safeParseDate(str: String?): LocalDate {
         if (str.isNullOrBlank()) return LocalDate.now()
@@ -487,6 +519,9 @@ class AccountingRepository(
                 accountingMode = it.accountingMode,
                 businessType = it.businessType,
                 gstEnabled = it.gstEnabled,
+                gstOperatingMode = it.gstOperatingMode,
+                gstScheme = it.gstScheme,
+                gstFilingFrequency = it.gstFilingFrequency,
                 isDefault = it.isDefault,
                 createdAt = it.createdAt
             )
@@ -510,6 +545,9 @@ class AccountingRepository(
             accountingMode = company.accountingMode,
             businessType = company.businessType,
             gstEnabled = company.gstEnabled,
+            gstOperatingMode = company.gstOperatingMode,
+            gstScheme = company.gstScheme,
+            gstFilingFrequency = company.gstFilingFrequency,
             isDefault = company.isDefault,
             createdAt = System.currentTimeMillis()
         )
@@ -545,10 +583,17 @@ class AccountingRepository(
         )
         dao.insertGroups(baseGroups)
 
-        // Insert primary cash and bank ledgers
+        // Insert primary cash/bank ledgers, plus one Sales and one Purchase account so a new
+        // company can post its first Sale/Purchase immediately - without these, the trading-voucher
+        // ledger picker (TradingForm) starts genuinely empty and the Post button can never enable
+        // (voucher-UI audit finding, Rule 33 follow-up). Zero opening balance, no GST rate baked in
+        // (never `fallbackToDestructiveMigration`-style fake data) - same honest-zero pattern as
+        // Cash/Bank above, just extended to the two groups a trading voucher actually needs.
         val defaultLedgers = listOf(
             LedgerEntity("LED_CASH_${company.companyId}", company.companyId, "GRP_CASH_${company.companyId}", "Cash in Hand", "1001", 0L, DrCr.DEBIT, 0L, DrCr.DEBIT, "", "", company.stateCode, "", "", "", "", "", true, true, "", 0.0),
-            LedgerEntity("LED_BANK_${company.companyId}", company.companyId, "GRP_BANK_${company.companyId}", "Primary Bank Account", "1002", 0L, DrCr.DEBIT, 0L, DrCr.DEBIT, "", "", company.stateCode, "", "", "", "", "", true, true, "", 0.0)
+            LedgerEntity("LED_BANK_${company.companyId}", company.companyId, "GRP_BANK_${company.companyId}", "Primary Bank Account", "1002", 0L, DrCr.DEBIT, 0L, DrCr.DEBIT, "", "", company.stateCode, "", "", "", "", "", true, true, "", 0.0),
+            LedgerEntity("LED_SALES_${company.companyId}", company.companyId, "GRP_SALES_${company.companyId}", "Sales Account", "3001", 0L, DrCr.CREDIT, 0L, DrCr.CREDIT, "", "", company.stateCode, "", "", "", "", "", false, true, "", 0.0),
+            LedgerEntity("LED_PURCHASE_${company.companyId}", company.companyId, "GRP_PURCHASE_${company.companyId}", "Purchase Account", "4001", 0L, DrCr.DEBIT, 0L, DrCr.DEBIT, "", "", company.stateCode, "", "", "", "", "", false, true, "", 0.0)
         )
         dao.insertLedgers(defaultLedgers)
 
@@ -585,7 +630,20 @@ class AccountingRepository(
         accountingMode: AccountingMode? = null,
         businessType: BusinessType? = null,
         userId: String = "ADMIN",
-        gstEnabled: Boolean? = null
+        gstEnabled: Boolean? = null,
+        /** D1a - see [com.example.accounting.domain.company.Company.gstOperatingMode]. Same
+         * "named explicit parameter on this company-profile-update function, no separate silent
+         * path" rationale as [gstScheme]/[gstFilingFrequency] below. */
+        gstOperatingMode: com.example.accounting.domain.company.GstOperatingMode? = null,
+        /** Rule 33 - the company's own statutory scheme choice. Deliberately a named, explicit
+         * parameter on this SAME company-profile-update function rather than a new one on the
+         * Return Dashboard - the dashboard reads [com.example.accounting.domain.company.Company.gstScheme],
+         * it never has its own path to silently overwrite it. */
+        gstScheme: com.example.accounting.domain.taxation.gstreturn.GstScheme? = null,
+        /** Rule 33 follow-up - the Regular-scheme filing frequency (Monthly/QRMP-Quarterly). Same
+         * "named explicit parameter on the company-profile update, no separate silent path"
+         * rationale as [gstScheme]. */
+        gstFilingFrequency: com.example.accounting.domain.taxation.gstreturn.GstReturnPeriodicity? = null
     ): AccountingResult<Unit> {
         val existing = dao.getCompanyById(companyId)
             ?: return AccountingResult.Failure(AppError.ValidationError("Company not found"))
@@ -594,7 +652,10 @@ class AccountingRepository(
             existing.copy(
                 accountingMode = accountingMode ?: existing.accountingMode,
                 businessType = businessType ?: existing.businessType,
-                gstEnabled = gstEnabled ?: existing.gstEnabled
+                gstEnabled = gstEnabled ?: existing.gstEnabled,
+                gstOperatingMode = gstOperatingMode ?: existing.gstOperatingMode,
+                gstScheme = gstScheme ?: existing.gstScheme,
+                gstFilingFrequency = gstFilingFrequency ?: existing.gstFilingFrequency
             )
         )
 
@@ -606,7 +667,7 @@ class AccountingRepository(
                 action = AuditAction.UPDATE,
                 entityType = "Company",
                 entityId = companyId,
-                description = "Accounting configuration changed: mode=${accountingMode ?: existing.accountingMode}, businessType=${businessType ?: existing.businessType}, gstEnabled=${gstEnabled ?: existing.gstEnabled}",
+                description = "Accounting configuration changed: mode=${accountingMode ?: existing.accountingMode}, businessType=${businessType ?: existing.businessType}, gstEnabled=${gstEnabled ?: existing.gstEnabled}, gstOperatingMode=${gstOperatingMode ?: existing.gstOperatingMode}",
                 performedBy = userId,
                 timestamp = System.currentTimeMillis(),
                 payloadJson = "{}"
@@ -1615,6 +1676,9 @@ class AccountingRepository(
         financialYearId: String,
         customerLedgerId: String,
         lines: List<com.example.accounting.domain.trading.TradingLineInput>,
+        /** D1b - the real invoice/business date; see [GstTransaction.transactionDate]. Required,
+         * never defaulted to `createdAt`. */
+        date: LocalDate,
         idempotencyKey: String = UUID.randomUUID().toString()
     ): AccountingResult<List<GstTransaction>> {
         val company = dao.getCompanyById(companyId)
@@ -1629,25 +1693,147 @@ class AccountingRepository(
         if (lines.isEmpty()) {
             return AccountingResult.Failure(AppError.ValidationError("At least one item line is required."))
         }
-        if (dbTransaction == null) {
-            return AccountingResult.Failure(AppError.SystemError("Database transaction unavailable: cannot post GST transaction atomically."))
-        }
 
         // Place of Supply (Rule 29): never defaulted to the company's own state - that would
         // silently force INTRA_STATE regardless of the customer's actual location. If the ledger
-        // has no state on file, surface it instead of guessing.
+        // has no state on file, surface it instead of guessing. Checked before the dbTransaction
+        // guard below (business-rule rejections are surfaced before infrastructure-availability
+        // ones, and this ordering also lets this specific rule be exercised in a pure-JVM test with
+        // no real Room AppDatabase, matching how far every other business-rule check here already
+        // reaches without one).
         if (customerLedger.stateCode.isBlank()) {
             return AccountingResult.Failure(
                 AppError.ValidationError("Set a State for customer '${customerLedger.name}' before posting - Place of Supply cannot be determined.")
             )
         }
+        if (dbTransaction == null) {
+            return AccountingResult.Failure(AppError.SystemError("Database transaction unavailable: cannot post GST transaction atomically."))
+        }
         val placeOfSupply = customerLedger.stateCode
+        val partyRegistrationStatus = customerLedger.gstRegistrationStatus?.let { raw ->
+            runCatching { GstRegistrationStatus.valueOf(raw) }.getOrNull()
+        }
         val gstTransactions = com.example.accounting.domain.trading.TradingWorkflowEngine.buildGstOnlySale(
             companyId = companyId, financialYearId = financialYearId,
             customerLedgerId = customerLedgerId, customerGstin = customerLedger.gstin,
-            companyStateCode = company.stateCode, placeOfSupply = placeOfSupply, lines = lines
+            companyStateCode = company.stateCode, placeOfSupply = placeOfSupply, lines = lines,
+            date = date, partyGstRegistrationStatus = partyRegistrationStatus
         )
 
+        return persistGstOnlyTransactions(companyId, financialYearId, gstTransactions, idempotencyKey)
+    }
+
+    /**
+     * D1b (GST-Only Purchase + Sales/Purchase Return + GST Fact Hardening) - the Purchase
+     * counterpart of [postGstOnlySale], mirroring its exact shape. Rule 31/RCM stays exactly as
+     * explicit here as it already is on the accounting-integrated Purchase path - `chargeType`
+     * travels per-line from [lines] into [com.example.accounting.domain.trading.TradingWorkflowEngine.buildGstOnlyPurchase],
+     * never inferred from [partyRegistrationStatus]/party type/vendor type/GSTIN/tax rate.
+     */
+    suspend fun postGstOnlyPurchase(
+        companyId: String,
+        financialYearId: String,
+        supplierLedgerId: String,
+        lines: List<com.example.accounting.domain.trading.TradingLineInput>,
+        date: LocalDate,
+        idempotencyKey: String = UUID.randomUUID().toString()
+    ): AccountingResult<List<GstTransaction>> {
+        val company = dao.getCompanyById(companyId)
+            ?: return AccountingResult.Failure(AppError.ResourceNotFound("Company", companyId))
+        val fy = dao.getFinancialYearById(financialYearId)
+            ?: return AccountingResult.Failure(AppError.ResourceNotFound("FinancialYear", financialYearId))
+        if (fy.companyId != companyId) {
+            return AccountingResult.Failure(AppError.ValidationError("Financial year '$financialYearId' does not belong to company '$companyId'."))
+        }
+        val supplierLedger = dao.getLedgerById(companyId, supplierLedgerId)
+            ?: return AccountingResult.Failure(AppError.ResourceNotFound("Ledger", supplierLedgerId))
+        if (lines.isEmpty()) {
+            return AccountingResult.Failure(AppError.ValidationError("At least one item line is required."))
+        }
+
+        // Place of Supply (Rule 29) - same anti-guessing rule, and same "checked before the
+        // dbTransaction guard" ordering rationale, as postGstOnlySale.
+        if (supplierLedger.stateCode.isBlank()) {
+            return AccountingResult.Failure(
+                AppError.ValidationError("Set a State for supplier '${supplierLedger.name}' before posting - Place of Supply cannot be determined.")
+            )
+        }
+        if (dbTransaction == null) {
+            return AccountingResult.Failure(AppError.SystemError("Database transaction unavailable: cannot post GST transaction atomically."))
+        }
+        val placeOfSupply = supplierLedger.stateCode
+        val partyRegistrationStatus = supplierLedger.gstRegistrationStatus?.let { raw ->
+            runCatching { GstRegistrationStatus.valueOf(raw) }.getOrNull()
+        }
+        val gstTransactionsResult = runCatching {
+            com.example.accounting.domain.trading.TradingWorkflowEngine.buildGstOnlyPurchase(
+                companyId = companyId, financialYearId = financialYearId,
+                supplierLedgerId = supplierLedgerId, supplierGstin = supplierLedger.gstin,
+                companyStateCode = company.stateCode, placeOfSupply = placeOfSupply, lines = lines,
+                date = date, partyGstRegistrationStatus = partyRegistrationStatus
+            )
+        }
+        val gstTransactions = gstTransactionsResult.getOrElse {
+            return AccountingResult.Failure(AppError.ValidationError(it.message ?: "Invalid GST-only Purchase line."))
+        }
+
+        return persistGstOnlyTransactions(companyId, financialYearId, gstTransactions, idempotencyKey)
+    }
+
+    suspend fun postGstOnlyCreditNote(
+        companyId: String, financialYearId: String, originalTransactionGroupId: String,
+        date: LocalDate, idempotencyKey: String = UUID.randomUUID().toString()
+    ) = postGstOnlyNote(isCredit = true, companyId, financialYearId, originalTransactionGroupId, date, idempotencyKey)
+
+    suspend fun postGstOnlyDebitNote(
+        companyId: String, financialYearId: String, originalTransactionGroupId: String,
+        date: LocalDate, idempotencyKey: String = UUID.randomUUID().toString()
+    ) = postGstOnlyNote(isCredit = false, companyId, financialYearId, originalTransactionGroupId, date, idempotencyKey)
+
+    /**
+     * D1b - GST-only Credit Note (against a GST-only Sale) / Debit Note (against a GST-only
+     * Purchase). Mirrors [postNote]'s own shape (look up the original -> validate its type/state ->
+     * delegate to the domain engine -> persist) but looks the original up by
+     * [GstTransactionEntity.transactionGroupId] instead of a voucherId, since a GST-only
+     * transaction has none - see [com.example.accounting.data.local.dao.AccountingDao.getGstTransactionsByGroupId]'s
+     * own KDoc for why this is the correct lookup key.
+     */
+    private suspend fun postGstOnlyNote(
+        isCredit: Boolean, companyId: String, financialYearId: String,
+        originalTransactionGroupId: String, date: LocalDate, idempotencyKey: String
+    ): AccountingResult<List<GstTransaction>> {
+        val fy = dao.getFinancialYearById(financialYearId)
+            ?: return AccountingResult.Failure(AppError.ResourceNotFound("FinancialYear", financialYearId))
+        if (fy.companyId != companyId) {
+            return AccountingResult.Failure(AppError.ValidationError("Financial year '$financialYearId' does not belong to company '$companyId'."))
+        }
+        val originalEntities = dao.getGstTransactionsByGroupId(companyId, originalTransactionGroupId)
+        if (originalEntities.isEmpty()) {
+            return AccountingResult.Failure(AppError.ResourceNotFound("Original GST-only transaction", originalTransactionGroupId))
+        }
+        val expectedType = if (isCredit) VoucherType.SALES else VoucherType.PURCHASE
+        if (originalEntities.any { it.voucherType != expectedType }) {
+            return AccountingResult.Failure(
+                AppError.ValidationError("A GST-only ${if (isCredit) "Credit" else "Debit"} Note must reference a GST-only ${expectedType.displayName}.")
+            )
+        }
+        if (dbTransaction == null) {
+            return AccountingResult.Failure(AppError.SystemError("Database transaction unavailable: cannot post GST transaction atomically."))
+        }
+        val noteVoucherType = if (isCredit) VoucherType.CREDIT_NOTE else VoucherType.DEBIT_NOTE
+        val originalDomain = originalEntities.map { it.toDomainGstTransaction() }
+        val gstTransactions = com.example.accounting.domain.trading.TradingWorkflowEngine.buildGstOnlyNote(
+            noteVoucherType = noteVoucherType, originalGstTransactions = originalDomain, date = date
+        )
+        return persistGstOnlyTransactions(companyId, financialYearId, gstTransactions, idempotencyKey)
+    }
+
+    /** D1b - the shared entity-mapping/Outbox-enqueue/atomic-persist tail every GST-only posting
+     * function (Sale/Purchase/Credit Note/Debit Note) ends with - extracted once these became four
+     * near-identical call sites instead of one, per this project's "reuse over duplication" rule. */
+    private suspend fun persistGstOnlyTransactions(
+        companyId: String, financialYearId: String, gstTransactions: List<GstTransaction>, idempotencyKey: String
+    ): AccountingResult<List<GstTransaction>> {
         val entities = gstTransactions.map { gt ->
             GstTransactionEntity(
                 gstTransactionId = gt.gstTransactionId, companyId = gt.companyId, financialYearId = gt.financialYearId,
@@ -1657,14 +1843,16 @@ class AccountingRepository(
                 taxableAmountPaise = gt.taxableAmount.paise, gstRatePercent = gt.gstRatePercent,
                 cgstPaise = gt.cgst.paise, sgstPaise = gt.sgst.paise, igstPaise = gt.igst.paise, cessPaise = gt.cess.paise,
                 direction = gt.direction, lineOrder = gt.lineOrder, createdAt = System.currentTimeMillis(),
-                chargeType = gt.chargeType
+                chargeType = gt.chargeType, supplyNature = gt.supplyNature,
+                transactionGroupId = gt.transactionGroupId, transactionDate = gt.transactionDate?.toString(),
+                partyGstRegistrationStatus = gt.partyGstRegistrationStatus?.name
             )
         }
 
-        // No real voucherId exists to correlate these rows as one Outbox aggregate - the first
-        // line's own id is used instead, the same way a multi-line Voucher uses its one voucherId
-        // regardless of how many journal lines it carries.
-        val aggregateId = entities.first().gstTransactionId
+        // D1b: every line already carries the real, explicit transactionGroupId (generated once
+        // per posting call by the engine) - this is what correlates the Outbox aggregate now,
+        // never "the first line's own id" as a stand-in.
+        val aggregateId = entities.first().transactionGroupId
         val outboxItem = OutboxSyncEntity(
             syncId = UUID.randomUUID().toString(), companyId = companyId,
             entityType = "GST_TRANSACTION", entityId = aggregateId, operation = "INSERT",
@@ -1678,9 +1866,15 @@ class AccountingRepository(
                     voucher = null,
                     gstTransactions = entities.map {
                         SyncGstTransactionDto(
-                            it.gstTransactionId, it.voucherType.name, it.partyLedgerId, it.partyGstin, it.placeOfSupply, it.supplyType.name,
-                            it.itemId, it.hsnSacCode, it.quantityRaw, it.taxableAmountPaise, it.gstRatePercent,
-                            it.cgstPaise, it.sgstPaise, it.igstPaise, it.cessPaise, it.direction.name, it.lineOrder
+                            gstTransactionId = it.gstTransactionId, voucherType = it.voucherType.name, partyLedgerId = it.partyLedgerId,
+                            partyGstin = it.partyGstin, placeOfSupply = it.placeOfSupply, supplyType = it.supplyType.name,
+                            itemId = it.itemId, hsnSacCode = it.hsnSacCode, quantityRaw = it.quantityRaw,
+                            taxableAmountPaise = it.taxableAmountPaise, gstRatePercent = it.gstRatePercent,
+                            cgstPaise = it.cgstPaise, sgstPaise = it.sgstPaise, igstPaise = it.igstPaise, cessPaise = it.cessPaise,
+                            direction = it.direction.name, lineOrder = it.lineOrder,
+                            chargeType = it.chargeType.name, supplyNature = it.supplyNature.name,
+                            transactionGroupId = it.transactionGroupId, transactionDate = it.transactionDate,
+                            partyGstRegistrationStatus = it.partyGstRegistrationStatus
                         )
                     }
                 )
@@ -1689,7 +1883,7 @@ class AccountingRepository(
             createdAt = System.currentTimeMillis(), updatedAt = System.currentTimeMillis()
         )
 
-        val result = dbTransaction.postGstOnlyTransactionsAtomic(entities, outboxItem)
+        val result = dbTransaction!!.postGstOnlyTransactionsAtomic(entities, outboxItem)
         return if (result.isSuccess) {
             AccountingResult.Success(gstTransactions)
         } else {
@@ -2571,6 +2765,416 @@ class AccountingRepository(
             totalCess = Money.fromPaise(totalCess),
             netCessPayable = Money.fromPaise(netCessPayable)
         )
+    }
+
+    // ==================== RULE 33: GST RETURN DASHBOARD & FILING FOUNDATION ====================
+
+    private fun GstTransactionEntity.toDomainGstTransaction(): GstTransaction = GstTransaction(
+        gstTransactionId = gstTransactionId, companyId = companyId, financialYearId = financialYearId,
+        voucherId = voucherId, voucherType = voucherType, partyLedgerId = partyLedgerId,
+        partyGstin = partyGstin, placeOfSupply = placeOfSupply, supplyType = supplyType,
+        itemId = itemId, hsnSacCode = hsnSacCode,
+        quantity = quantityRaw?.let { q -> Quantity(q) },
+        taxableAmount = Money.fromPaise(taxableAmountPaise), gstRatePercent = gstRatePercent,
+        cgst = Money.fromPaise(cgstPaise), sgst = Money.fromPaise(sgstPaise),
+        igst = Money.fromPaise(igstPaise), cess = Money.fromPaise(cessPaise),
+        direction = direction, lineOrder = lineOrder, chargeType = chargeType,
+        supplyNature = supplyNature, transactionGroupId = transactionGroupId,
+        transactionDate = transactionDate?.let { safeParseDate(it) },
+        partyGstRegistrationStatus = partyGstRegistrationStatus?.let { raw ->
+            runCatching { GstRegistrationStatus.valueOf(raw) }.getOrNull()
+        }
+    )
+
+    private fun GstReturnEntity.toDomain(): GstReturn = GstReturn(
+        gstReturnId = gstReturnId, companyId = companyId, financialYearId = financialYearId, fyCode = fyCode,
+        quarter = GstQuarter.valueOf(quarter), month = month, periodKey = periodKey, scheme = scheme,
+        returnType = returnType, periodicity = periodicity, filingMode = filingMode, status = status,
+        createdAt = createdAt, updatedAt = updatedAt, submittedAt = submittedAt,
+        acknowledgementNumber = acknowledgementNumber, errorCode = errorCode, errorMessage = errorMessage,
+        latestRequestArtifactId = latestRequestArtifactId, latestResponseArtifactId = latestResponseArtifactId,
+        schemaVersion = schemaVersion
+    )
+
+    private fun GstReturnArtifactEntity.toDomain(): GstReturnArtifact = GstReturnArtifact(
+        artifactId, gstReturnId, artifactType, schemaVersion, jsonContent, createdAt
+    )
+
+    private fun GstReturnSectionEntity.toDomain(): GstReturnSection = GstReturnSection(
+        sectionId, gstReturnId, sectionKey, status, resultDataJson, errorsJson, updatedAt
+    )
+
+    private fun GstReturnSubmissionEntity.toDomain(): GstReturnSubmission = GstReturnSubmission(
+        submissionId, gstReturnId, attemptNumber, requestArtifactId, responseArtifactId, status,
+        acknowledgementNumber, errorCode, errorMessage, submittedAt, respondedAt
+    )
+
+    fun getGstReturns(companyId: String): Flow<List<GstReturn>> =
+        dao.getGstReturnsForCompany(companyId).map { list -> list.map { it.toDomain() } }
+
+    suspend fun getGstReturn(companyId: String, gstReturnId: String): GstReturn? =
+        dao.getGstReturnById(companyId, gstReturnId)?.toDomain()
+
+    suspend fun getGstReturnArtifacts(gstReturnId: String): List<GstReturnArtifact> =
+        dao.getArtifactsForGstReturn(gstReturnId).map { it.toDomain() }
+
+    suspend fun getGstReturnSections(gstReturnId: String): List<GstReturnSection> =
+        dao.getSectionsForGstReturn(gstReturnId).map { it.toDomain() }
+
+    suspend fun getGstReturnSubmissions(gstReturnId: String): List<GstReturnSubmission> =
+        dao.getSubmissionsForGstReturn(gstReturnId).map { it.toDomain() }
+
+    /**
+     * Finds the existing return for this exact (period, return type, scheme), or creates a fresh
+     * DRAFT one - idempotent, so re-opening the same Dashboard selection never creates duplicate
+     * rows (Rule 33, Section 15 - "a prepared return must be reopenable").
+     */
+    suspend fun getOrCreateGstReturn(
+        companyId: String,
+        fy: FinancialYear,
+        quarter: GstQuarter,
+        month: Int?,
+        scheme: GstScheme,
+        returnType: GstReturnType,
+        periodicity: GstReturnPeriodicity,
+        filingMode: GstFilingMode
+    ): GstReturn {
+        val period = GstPeriod.of(fy, quarter, month)
+        dao.findGstReturn(companyId, period.periodKey, returnType.name, scheme.name)?.let { return it.toDomain() }
+        val now = System.currentTimeMillis()
+        val entity = GstReturnEntity(
+            gstReturnId = UUID.randomUUID().toString(), companyId = companyId, financialYearId = fy.financialYearId,
+            fyCode = fy.fyCode, quarter = quarter.name, month = month, periodKey = period.periodKey,
+            scheme = scheme, returnType = returnType, periodicity = periodicity, filingMode = filingMode,
+            status = GstReturnStatus.DRAFT, createdAt = now, updatedAt = now, submittedAt = null,
+            acknowledgementNumber = null, errorCode = null, errorMessage = null,
+            latestRequestArtifactId = null, latestResponseArtifactId = null, schemaVersion = "1.0"
+        )
+        dao.insertGstReturn(entity)
+        return entity.toDomain()
+    }
+
+    /**
+     * Rule 33, Section 11/14 - the ACTIVE (non-cancelled) posted GST transactions falling inside
+     * [dateRange], the sole data source [prepareGstReturn] consumes. Reuses
+     * [getGstTransactionsForCompanyFY]'s already-persisted rows (never a second GST calculation),
+     * excludes any row whose voucher is cancelled, and filters by each row's REAL voucher date
+     * (never `createdAt`/a device display date) - a voucher-less GST-only row has no cancellation
+     * state to check and is dated by its own `createdAt` as the only fact available for it (that
+     * capability has no UI entry point yet; see [postGstOnlySale]'s own doc comment).
+     */
+    suspend fun getActiveGstTransactionsForPeriod(
+        companyId: String,
+        financialYearId: String,
+        dateRange: ClosedRange<LocalDate>
+    ): List<GstTransaction> {
+        val rows = dao.getGstTransactionsForCompanyFY(companyId, financialYearId)
+        val vouchersById = dao.getAllVouchersByCompany(companyId).first().associateBy { it.voucherId }
+        return rows.filter { row ->
+            val voucher = row.voucherId?.let { vouchersById[it] }
+            val active = voucher == null || !voucher.isCancelled
+            val effectiveDate = voucher?.date?.let { safeParseDate(it) }
+                ?: java.time.Instant.ofEpochMilli(row.createdAt).atZone(java.time.ZoneId.systemDefault()).toLocalDate()
+            active && !effectiveDate.isBefore(dateRange.start) && !effectiveDate.isAfter(dateRange.endInclusive)
+        }.map { it.toDomainGstTransaction() }
+    }
+
+    /**
+     * Rule 33, Section 5/10/11 - PREPARE: pulls this return's period worth of active GST
+     * transactions and stores one generic "SUMMARY" section (never a statutory GSTR table name this
+     * foundation doesn't own). Forward-charge and RCM inward tax are kept in separate figures here -
+     * RCM Input/Liability are accounting postings, never folded into ordinary inward tax (Section
+     * 12). Never transitions [GstReturn.status] itself - VALIDATE decides READY/VALIDATION_FAILED.
+     */
+    /** A generic per-bucket total this repository can honestly compute from already-persisted
+     * [GstTransaction] rows - never a statutory field this domain doesn't actually store (no B2CL
+     * ₹2.5L threshold split, no invoice-level detail). */
+    private fun bucketTotals(rows: List<GstTransaction>): Map<String, Any?> = linkedMapOf(
+        "count" to rows.size,
+        "taxableValuePaise" to rows.sumOf { it.taxableAmount.paise },
+        "cgstPaise" to rows.sumOf { it.cgst.paise },
+        "sgstPaise" to rows.sumOf { it.sgst.paise },
+        "igstPaise" to rows.sumOf { it.igst.paise },
+        "cessPaise" to rows.sumOf { it.cess.paise }
+    )
+
+    /**
+     * Rule 33 follow-up - real, statutorily-named GSTR-1/GSTR-3B section buckets (per the public
+     * GST Network return schema: GSTR-1's B2B/B2C/EXP/NIL/HSN tables; GSTR-3B's 3.1 outward and
+     * Section 4 ITC tables), computed ONLY from facts this domain already has per
+     * [GstTransaction] (direction, chargeType, supplyType, partyGstin, hsnSacCode) - never a second
+     * GST calculation, and never a fabricated field (invoice-level B2CL/B2CS ₹2.5L threshold
+     * splitting needs invoice-level detail this domain does not store, so B2C is reported as one
+     * combined bucket, not the GSTN portal's exact two). GSTR-1 covers OUTWARD supplies only, never
+     * inward/purchase data - GSTR-3B covers both sides. GSTR-4 (Composition) has no section
+     * breakdown defined yet (out of this pass's scope) and gets a single generic bucket.
+     */
+    private fun buildGstReturnSections(returnType: GstReturnType, transactions: List<GstTransaction>): Map<String, Map<String, Any?>> {
+        val outward = transactions.filter { it.direction == GstDirection.OUTPUT }
+        val inward = transactions.filter { it.direction == GstDirection.INPUT }
+        return when (returnType) {
+            GstReturnType.GSTR1 -> linkedMapOf(
+                "B2B" to bucketTotals(outward.filter { it.partyGstin.isNotBlank() }),
+                "B2C" to bucketTotals(outward.filter { it.partyGstin.isBlank() && it.supplyType != SupplyType.EXPORT && it.supplyType != SupplyType.EXEMPT }),
+                "EXP" to bucketTotals(outward.filter { it.supplyType == SupplyType.EXPORT }),
+                "NIL_EXEMPT" to bucketTotals(outward.filter { it.supplyType == SupplyType.EXEMPT }),
+                "HSN" to bucketTotals(outward)
+            )
+            GstReturnType.GSTR3B -> linkedMapOf(
+                "OUTWARD_TAXABLE" to bucketTotals(outward.filter { it.supplyType == SupplyType.INTRA_STATE || it.supplyType == SupplyType.INTER_STATE }),
+                "OUTWARD_ZERO_RATED" to bucketTotals(outward.filter { it.supplyType == SupplyType.EXPORT }),
+                "OUTWARD_NIL_EXEMPT" to bucketTotals(outward.filter { it.supplyType == SupplyType.EXEMPT }),
+                "RCM_LIABILITY" to bucketTotals(inward.filter { it.chargeType == GstChargeType.REVERSE_CHARGE }),
+                "ITC_FORWARD" to bucketTotals(inward.filter { it.chargeType == GstChargeType.FORWARD_CHARGE }),
+                "ITC_RCM" to bucketTotals(inward.filter { it.chargeType == GstChargeType.REVERSE_CHARGE })
+            )
+            GstReturnType.GSTR4 -> linkedMapOf("SUMMARY" to bucketTotals(transactions))
+        }
+    }
+
+    suspend fun prepareGstReturn(companyId: String, gstReturnId: String, fy: FinancialYear): AccountingResult<GstReturn> {
+        val entity = dao.getGstReturnById(companyId, gstReturnId)
+            ?: return AccountingResult.Failure(AppError.ResourceNotFound("GstReturn", gstReturnId))
+        val period = GstPeriod.of(fy, GstQuarter.valueOf(entity.quarter), entity.month)
+        val transactions = getActiveGstTransactionsForPeriod(companyId, entity.financialYearId, period.dateRange())
+
+        val now = System.currentTimeMillis()
+        val existingSections = dao.getSectionsForGstReturn(gstReturnId).associateBy { it.sectionKey }
+        buildGstReturnSections(entity.returnType, transactions).forEach { (key, data) ->
+            dao.upsertGstReturnSection(
+                GstReturnSectionEntity(
+                    sectionId = existingSections[key]?.sectionId ?: UUID.randomUUID().toString(),
+                    gstReturnId = gstReturnId, sectionKey = key, status = GstReturnSectionStatus.PREPARED,
+                    resultDataJson = gstReturnJsonAdapter.toJson(data), errorsJson = null, updatedAt = now
+                )
+            )
+        }
+        dao.updateGstReturn(entity.copy(updatedAt = now))
+        return AccountingResult.Success(dao.getGstReturnById(companyId, gstReturnId)!!.toDomain())
+    }
+
+    /**
+     * Rule 33, Section 5/7/13 - VALIDATE: requires a PREPARED section to exist, and (Rule 29)
+     * defensively re-checks that every transaction this return covers has a resolved
+     * [GstTransaction.placeOfSupply] - by construction this can only be blank if a row bypassed
+     * normal posting-time validation, but this layer must surface that rather than silently accept
+     * or fabricate a state. Transitions to READY or VALIDATION_FAILED via
+     * [GstReturnStatusTransitions] - never a direct field write outside it.
+     */
+    suspend fun validateGstReturn(companyId: String, gstReturnId: String, fy: FinancialYear): AccountingResult<GstReturn> {
+        val entity = dao.getGstReturnById(companyId, gstReturnId)
+            ?: return AccountingResult.Failure(AppError.ResourceNotFound("GstReturn", gstReturnId))
+        val sections = dao.getSectionsForGstReturn(gstReturnId)
+        val errors = mutableListOf<String>()
+        // A section only ever starts PENDING - PREPARED/VALIDATION_PASSED/VALIDATION_FAILED all
+        // prove Prepare has run at least once (re-validating an already-validated return, e.g.
+        // after a failed submission attempt, must not be mistaken for "never prepared"). A return
+        // now carries several real sections (Rule 33 follow-up) rather than one "SUMMARY" bucket -
+        // this only requires at least one to exist and none still PENDING.
+        if (sections.isEmpty() || sections.any { it.status == GstReturnSectionStatus.PENDING }) {
+            errors += "Return has not been prepared - run Prepare before Validate."
+        } else {
+            val period = GstPeriod.of(fy, GstQuarter.valueOf(entity.quarter), entity.month)
+            val transactions = getActiveGstTransactionsForPeriod(companyId, entity.financialYearId, period.dateRange())
+            val unresolved = transactions.filter { it.placeOfSupply.isBlank() }
+            if (unresolved.isNotEmpty()) {
+                errors += "${unresolved.size} transaction(s) have an unresolved Place of Supply - this cannot be guessed from the company's own state."
+            }
+        }
+
+        val newStatus = if (errors.isEmpty()) GstReturnStatus.READY else GstReturnStatus.VALIDATION_FAILED
+        if (!GstReturnStatusTransitions.isAllowed(entity.status, newStatus)) {
+            return AccountingResult.Failure(
+                AppError.BusinessRuleViolation("Cannot move return from ${entity.status} to $newStatus.")
+            )
+        }
+        val now = System.currentTimeMillis()
+        dao.updateGstReturn(
+            entity.copy(status = newStatus, errorMessage = errors.joinToString("; ").ifBlank { null }, updatedAt = now)
+        )
+        sections.forEach { section ->
+            dao.upsertGstReturnSection(
+                section.copy(
+                    status = if (errors.isEmpty()) GstReturnSectionStatus.VALIDATION_PASSED else GstReturnSectionStatus.VALIDATION_FAILED,
+                    errorsJson = if (errors.isEmpty()) null else gstReturnJsonAdapter.toJson(mapOf("errors" to errors)),
+                    updatedAt = now
+                )
+            )
+        }
+        return AccountingResult.Success(dao.getGstReturnById(companyId, gstReturnId)!!.toDomain())
+    }
+
+    /**
+     * Rule 33, Section 5/9 - GENERATE JSON (offline): requires READY, reuses the existing
+     * [GstrJsonSerializer]/[ExportMetadata] (never a second JSON framework/serializer), and always
+     * inserts a NEW artifact row rather than overwriting a previous one (Section 9/16).
+     */
+    suspend fun generateGstReturnOfflineJson(companyId: String, gstReturnId: String, fy: FinancialYear): AccountingResult<GstReturnArtifact> {
+        val entity = dao.getGstReturnById(companyId, gstReturnId)
+            ?: return AccountingResult.Failure(AppError.ResourceNotFound("GstReturn", gstReturnId))
+        if (entity.status != GstReturnStatus.READY) {
+            return AccountingResult.Failure(AppError.BusinessRuleViolation("Return must be READY before generating JSON - current status is ${entity.status}."))
+        }
+        val period = GstPeriod.of(fy, GstQuarter.valueOf(entity.quarter), entity.month)
+        val transactions = getActiveGstTransactionsForPeriod(companyId, entity.financialYearId, period.dateRange())
+        val dtos = transactions.map { gt ->
+            GSTTransactionExportDto(
+                gstTransactionId = gt.gstTransactionId, voucherId = gt.voucherId, voucherType = gt.voucherType,
+                partyGstin = gt.partyGstin, placeOfSupply = gt.placeOfSupply, supplyType = gt.supplyType.name,
+                hsnSacCode = gt.hsnSacCode, isService = null, taxableAmountPaise = gt.taxableAmount.paise,
+                gstRatePercent = gt.gstRatePercent, cgstPaise = gt.cgst.paise, sgstPaise = gt.sgst.paise,
+                igstPaise = gt.igst.paise, cessPaise = gt.cess.paise, direction = gt.direction.name, lineOrder = gt.lineOrder
+            )
+        }
+        val json = GstrJsonSerializer.serialize(
+            ExportMetadata(exportType = ExportType.GST_TRANSACTIONS, companyId = companyId, financialYearId = entity.financialYearId),
+            dtos
+        )
+        val now = System.currentTimeMillis()
+        val artifact = GstReturnArtifactEntity(
+            artifactId = UUID.randomUUID().toString(), gstReturnId = gstReturnId,
+            artifactType = GstReturnArtifactType.REQUEST, schemaVersion = "1.0", jsonContent = json, createdAt = now
+        )
+        dao.insertGstReturnArtifact(artifact)
+        dao.updateGstReturn(entity.copy(latestRequestArtifactId = artifact.artifactId, updatedAt = now))
+        return AccountingResult.Success(artifact.toDomain())
+    }
+
+    /**
+     * Rule 33, Section 5/9 - IMPORT RESPONSE (offline): validates the given string is at least
+     * well-formed JSON (reusing Moshi, the same library already used for every other export/import
+     * in this codebase - never a new JSON dependency), stores it as a new RESPONSE artifact (never
+     * overwriting a previous one), and moves the return to PROCESSING - a real GST response was
+     * received and awaits the user's review, but this application never claims a return was FILED
+     * merely because *a* response arrived (Section 5: "MUST NOT claim that an offline return was
+     * filed/submitted"). [markGstReturnFiled] is the explicit, separate, user-driven step for that.
+     */
+    suspend fun importGstReturnOfflineResponse(companyId: String, gstReturnId: String, responseJson: String): AccountingResult<GstReturnArtifact> {
+        val entity = dao.getGstReturnById(companyId, gstReturnId)
+            ?: return AccountingResult.Failure(AppError.ResourceNotFound("GstReturn", gstReturnId))
+        val parsed = try {
+            genericJsonAdapter.fromJson(responseJson)
+        } catch (e: Exception) {
+            null
+        }
+        if (parsed == null) {
+            return AccountingResult.Failure(AppError.ValidationError("The imported file is not valid JSON."))
+        }
+        val newStatus = GstReturnStatus.PROCESSING
+        if (!GstReturnStatusTransitions.isAllowed(entity.status, newStatus)) {
+            return AccountingResult.Failure(
+                AppError.BusinessRuleViolation("Cannot import a response while the return is ${entity.status}.")
+            )
+        }
+        val now = System.currentTimeMillis()
+        val artifact = GstReturnArtifactEntity(
+            artifactId = UUID.randomUUID().toString(), gstReturnId = gstReturnId,
+            artifactType = GstReturnArtifactType.RESPONSE, schemaVersion = "1.0", jsonContent = responseJson, createdAt = now
+        )
+        dao.insertGstReturnArtifact(artifact)
+        dao.updateGstReturn(
+            entity.copy(status = newStatus, latestResponseArtifactId = artifact.artifactId, updatedAt = now)
+        )
+        return AccountingResult.Success(artifact.toDomain())
+    }
+
+    /**
+     * Rule 33, Section 5 - the explicit, user-driven confirmation that a PROCESSING return (an
+     * external response has already been imported and reviewed) is actually filed, carrying the
+     * real acknowledgement number the user read off that response. This application never infers
+     * FILED automatically from parsing an unknown response schema (Section 5/6: "do not fabricate").
+     */
+    suspend fun markGstReturnFiled(companyId: String, gstReturnId: String, acknowledgementNumber: String): AccountingResult<GstReturn> {
+        val entity = dao.getGstReturnById(companyId, gstReturnId)
+            ?: return AccountingResult.Failure(AppError.ResourceNotFound("GstReturn", gstReturnId))
+        if (!GstReturnStatusTransitions.isAllowed(entity.status, GstReturnStatus.FILED)) {
+            return AccountingResult.Failure(AppError.BusinessRuleViolation("Cannot mark ${entity.status} as FILED."))
+        }
+        if (acknowledgementNumber.isBlank()) {
+            return AccountingResult.Failure(AppError.ValidationError("An acknowledgement number is required to mark a return as Filed."))
+        }
+        val now = System.currentTimeMillis()
+        dao.updateGstReturn(
+            entity.copy(status = GstReturnStatus.FILED, acknowledgementNumber = acknowledgementNumber, updatedAt = now)
+        )
+        return AccountingResult.Success(dao.getGstReturnById(companyId, gstReturnId)!!.toDomain())
+    }
+
+    /**
+     * Rule 33, Section 6/16 - ONLINE submission through [gateway] (defaults to
+     * [UnconfiguredGstOnlineFilingGateway] - this repository has no real GST Network client to use
+     * instead). Requires READY, transitions READY->SUBMITTING->(SUBMITTED|FAILED) strictly through
+     * [GstReturnStatusTransitions], and always records the attempt as a new [GstReturnSubmission]
+     * row - a return submitted more than once keeps every prior attempt (Section 16).
+     */
+    suspend fun submitGstReturnOnline(
+        companyId: String,
+        gstReturnId: String,
+        fy: FinancialYear,
+        gateway: GstOnlineFilingGateway = UnconfiguredGstOnlineFilingGateway()
+    ): AccountingResult<GstReturn> {
+        val entity = dao.getGstReturnById(companyId, gstReturnId)
+            ?: return AccountingResult.Failure(AppError.ResourceNotFound("GstReturn", gstReturnId))
+        if (entity.status != GstReturnStatus.READY) {
+            return AccountingResult.Failure(AppError.BusinessRuleViolation("Return must be READY before submitting - current status is ${entity.status}."))
+        }
+        val now = System.currentTimeMillis()
+        dao.updateGstReturn(entity.copy(status = GstReturnStatus.SUBMITTING, updatedAt = now))
+
+        val period = GstPeriod.of(fy, GstQuarter.valueOf(entity.quarter), entity.month)
+        val transactions = getActiveGstTransactionsForPeriod(companyId, entity.financialYearId, period.dateRange())
+        val dtos = transactions.map { gt ->
+            GSTTransactionExportDto(
+                gstTransactionId = gt.gstTransactionId, voucherId = gt.voucherId, voucherType = gt.voucherType,
+                partyGstin = gt.partyGstin, placeOfSupply = gt.placeOfSupply, supplyType = gt.supplyType.name,
+                hsnSacCode = gt.hsnSacCode, isService = null, taxableAmountPaise = gt.taxableAmount.paise,
+                gstRatePercent = gt.gstRatePercent, cgstPaise = gt.cgst.paise, sgstPaise = gt.sgst.paise,
+                igstPaise = gt.igst.paise, cessPaise = gt.cess.paise, direction = gt.direction.name, lineOrder = gt.lineOrder
+            )
+        }
+        val requestJson = GstrJsonSerializer.serialize(
+            ExportMetadata(exportType = ExportType.GST_TRANSACTIONS, companyId = companyId, financialYearId = entity.financialYearId),
+            dtos
+        )
+        val requestArtifact = GstReturnArtifactEntity(
+            artifactId = UUID.randomUUID().toString(), gstReturnId = gstReturnId,
+            artifactType = GstReturnArtifactType.REQUEST, schemaVersion = "1.0", jsonContent = requestJson, createdAt = now
+        )
+        dao.insertGstReturnArtifact(requestArtifact)
+
+        val result = gateway.submitReturn(requestJson)
+        val finalStatus = if (result.success) GstReturnStatus.SUBMITTED else GstReturnStatus.FAILED
+        val respondedAt = System.currentTimeMillis()
+        var responseArtifactId: String? = null
+        if (result.responseJson.isNotBlank()) {
+            val responseArtifact = GstReturnArtifactEntity(
+                artifactId = UUID.randomUUID().toString(), gstReturnId = gstReturnId,
+                artifactType = GstReturnArtifactType.RESPONSE, schemaVersion = "1.0", jsonContent = result.responseJson, createdAt = respondedAt
+            )
+            dao.insertGstReturnArtifact(responseArtifact)
+            responseArtifactId = responseArtifact.artifactId
+        }
+
+        val priorAttempts = dao.getSubmissionsForGstReturn(gstReturnId)
+        dao.insertGstReturnSubmission(
+            GstReturnSubmissionEntity(
+                submissionId = UUID.randomUUID().toString(), gstReturnId = gstReturnId,
+                attemptNumber = priorAttempts.size + 1, requestArtifactId = requestArtifact.artifactId,
+                responseArtifactId = responseArtifactId, status = finalStatus,
+                acknowledgementNumber = result.acknowledgementNumber, errorCode = result.errorCode,
+                errorMessage = result.errorMessage, submittedAt = now, respondedAt = respondedAt
+            )
+        )
+        dao.updateGstReturn(
+            dao.getGstReturnById(companyId, gstReturnId)!!.copy(
+                status = finalStatus, submittedAt = now, acknowledgementNumber = result.acknowledgementNumber,
+                errorCode = result.errorCode, errorMessage = result.errorMessage,
+                latestRequestArtifactId = requestArtifact.artifactId,
+                latestResponseArtifactId = responseArtifactId ?: entity.latestResponseArtifactId,
+                updatedAt = respondedAt
+            )
+        )
+        return AccountingResult.Success(dao.getGstReturnById(companyId, gstReturnId)!!.toDomain())
     }
 
     // ==================== OUTBOX SYNC & AUDIT ====================
@@ -3539,7 +4143,8 @@ class AccountingRepository(
 
     private fun BusinessProfileEntity.toDomain(): BusinessProfile = BusinessProfile(
         businessProfileId = businessProfileId, companyId = companyId, businessName = businessName, legalName = legalName,
-        constitutionType = constitutionType, address = address, phone = phone, email = email, website = website,
+        constitutionType = constitutionType, address = address, pinCode = pinCode, city = city, state = state, country = country,
+        phone = phone, email = email, website = website,
         gstin = gstin, pan = pan, tan = tan, udyam = udyam,
         logoAssetId = logoAssetId, bankName = bankName, bankAccountNumber = bankAccountNumber, bankIfsc = bankIfsc,
         bankBranch = bankBranch, upiId = upiId, qrCodeAssetId = qrCodeAssetId, signatureAssetId = signatureAssetId,
@@ -3547,7 +4152,8 @@ class AccountingRepository(
     )
 
     private fun IndividualProfileEntity.toDomain(): IndividualProfile = IndividualProfile(
-        individualProfileId = individualProfileId, companyId = companyId, name = name, address = address, pan = pan,
+        individualProfileId = individualProfileId, companyId = companyId, name = name, address = address,
+        pinCode = pinCode, city = city, state = state, country = country, pan = pan,
         phone = phone, email = email, signatureAssetId = signatureAssetId, termsAndConditions = termsAndConditions,
         createdAt = createdAt, updatedAt = updatedAt
     )
@@ -3639,7 +4245,9 @@ class AccountingRepository(
         val entity = BusinessProfileEntity(
             businessProfileId = existing?.businessProfileId ?: profile.businessProfileId.ifBlank { "BIZ_${UUID.randomUUID().toString().take(8)}_${profile.companyId}" },
             companyId = profile.companyId, businessName = profile.businessName, legalName = profile.legalName,
-            constitutionType = profile.constitutionType, address = profile.address, phone = profile.phone, email = profile.email,
+            constitutionType = profile.constitutionType, address = profile.address,
+            pinCode = profile.pinCode, city = profile.city, state = profile.state, country = profile.country,
+            phone = profile.phone, email = profile.email,
             website = profile.website, gstin = profile.gstin, pan = profile.pan, tan = profile.tan, udyam = profile.udyam,
             logoAssetId = profile.logoAssetId,
             bankName = profile.bankName, bankAccountNumber = profile.bankAccountNumber, bankIfsc = profile.bankIfsc,
@@ -3651,6 +4259,7 @@ class AccountingRepository(
             dao.updateBusinessProfile(
                 companyId = entity.companyId, businessProfileId = entity.businessProfileId, businessName = entity.businessName,
                 legalName = entity.legalName, constitutionType = entity.constitutionType, address = entity.address,
+                pinCode = entity.pinCode, city = entity.city, state = entity.state, country = entity.country,
                 phone = entity.phone, email = entity.email, website = entity.website, gstin = entity.gstin, pan = entity.pan,
                 tan = entity.tan, udyam = entity.udyam, logoAssetId = entity.logoAssetId,
                 bankName = entity.bankName, bankAccountNumber = entity.bankAccountNumber, bankIfsc = entity.bankIfsc,
@@ -3671,14 +4280,16 @@ class AccountingRepository(
         val now = System.currentTimeMillis()
         val entity = IndividualProfileEntity(
             individualProfileId = existing?.individualProfileId ?: profile.individualProfileId.ifBlank { "IND_${UUID.randomUUID().toString().take(8)}_${profile.companyId}" },
-            companyId = profile.companyId, name = profile.name, address = profile.address, pan = profile.pan,
+            companyId = profile.companyId, name = profile.name, address = profile.address,
+            pinCode = profile.pinCode, city = profile.city, state = profile.state, country = profile.country, pan = profile.pan,
             phone = profile.phone, email = profile.email, signatureAssetId = profile.signatureAssetId,
             termsAndConditions = profile.termsAndConditions, createdAt = existing?.createdAt ?: now, updatedAt = now
         )
         if (existing != null) {
             dao.updateIndividualProfile(
                 companyId = entity.companyId, individualProfileId = entity.individualProfileId, name = entity.name,
-                address = entity.address, pan = entity.pan, phone = entity.phone, email = entity.email,
+                address = entity.address, pinCode = entity.pinCode, city = entity.city, state = entity.state, country = entity.country,
+                pan = entity.pan, phone = entity.phone, email = entity.email,
                 signatureAssetId = entity.signatureAssetId, termsAndConditions = entity.termsAndConditions, updatedAt = entity.updatedAt
             )
         } else {
@@ -3707,6 +4318,10 @@ class AccountingRepository(
 
     suspend fun getDocumentAsset(companyId: String, assetId: String): DocumentAsset? =
         dao.getDocumentAssetById(companyId, assetId)?.toDomain()
+
+    /** Rollback-only (Phase 7J-B.2 Slice 2) - see [com.example.accounting.data.local.dao.AccountingDao.deleteDocumentAsset]'s
+     * doc comment. Never a general asset-deletion entry point. */
+    suspend fun deleteDocumentAsset(companyId: String, assetId: String): Int = dao.deleteDocumentAsset(companyId, assetId)
 
     // ---------------- Rendered Document Records (Section 10/21 reproducibility log) ----------------
 
@@ -4179,7 +4794,7 @@ class AccountingRepository(
         val metadata = buildMetadata(companyId, ExportType.PROFIT_AND_LOSS, fyId)
         val content = when (format) {
             ExportFormat.JSON -> ExportJsonSerializer.serialize(metadata, dto.toTree())
-            ExportFormat.CSV -> return AccountingResult.Failure(AppError.ExportFormatUnsupported(format.name, ExportType.PROFIT_AND_LOSS.name))
+            ExportFormat.CSV -> CsvEngine.write(dto.toCsvHeaders(), dto.toCsvRows())
             ExportFormat.GSTR_JSON -> return AccountingResult.Failure(AppError.ExportFormatUnsupported(format.name, ExportType.PROFIT_AND_LOSS.name))
         }
         return AccountingResult.Success(ExportResult(metadata, format, content))
@@ -4192,7 +4807,7 @@ class AccountingRepository(
         val metadata = buildMetadata(companyId, ExportType.BALANCE_SHEET, fyId)
         val content = when (format) {
             ExportFormat.JSON -> ExportJsonSerializer.serialize(metadata, dto.toTree())
-            ExportFormat.CSV -> return AccountingResult.Failure(AppError.ExportFormatUnsupported(format.name, ExportType.BALANCE_SHEET.name))
+            ExportFormat.CSV -> CsvEngine.write(dto.toCsvHeaders(), dto.toCsvRows())
             ExportFormat.GSTR_JSON -> return AccountingResult.Failure(AppError.ExportFormatUnsupported(format.name, ExportType.BALANCE_SHEET.name))
         }
         return AccountingResult.Success(ExportResult(metadata, format, content))

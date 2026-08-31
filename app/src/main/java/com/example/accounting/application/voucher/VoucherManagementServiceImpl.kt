@@ -3,6 +3,7 @@ package com.example.accounting.application.voucher
 import com.example.accounting.core.common.AccountingResult
 import com.example.accounting.core.common.AppError
 import com.example.accounting.data.local.dao.AccountingDao
+import com.example.accounting.data.local.dao.VoucherAttachmentRow
 import com.example.accounting.data.local.entity.VoucherDocumentReferenceEntity
 import com.example.accounting.data.local.entity.VoucherDraftEntity
 import com.example.accounting.data.local.entity.VoucherDraftLineEntity
@@ -104,7 +105,29 @@ class VoucherManagementServiceImpl(
         return AccountingResult.Success(posted)
     }
 
+    /**
+     * Phase 7J-B.2 hardening - the original version trusted the caller entirely (no existence or
+     * company checks). Now verifies, in order: (1) the voucher exists for [companyId] - since
+     * [AccountingDao.getVoucherById] is itself `companyId`-scoped, a voucherId that belongs to a
+     * *different* company also fails here, not just a genuinely missing voucherId; (2) the document
+     * asset exists for the same [companyId], by the same company-scoped-query argument. Both checks
+     * together are what makes cross-company attachment structurally impossible, not just
+     * UI-discouraged. Duplicate `(voucherId, documentAssetId)` is idempotent, not an error: if the
+     * exact pair is already linked, this returns Success with the existing reference untouched
+     * (never a second row, never a changed `referenceId`/`createdAt`) - safe to call twice from a
+     * retried UI action. The `(voucherId, documentAssetId)` unique index (`MIGRATION_16_17`) is the
+     * DB-level backstop for this same guarantee, in case of a race between the pre-check and insert.
+     */
     override suspend fun attachDocumentReference(companyId: String, voucherId: String, documentAssetId: String): AccountingResult<Unit> {
+        dao.getVoucherById(companyId, voucherId)
+            ?: return AccountingResult.Failure(AppError.ValidationError("Voucher '$voucherId' was not found for this company."))
+        dao.getDocumentAssetById(companyId, documentAssetId)
+            ?: return AccountingResult.Failure(AppError.ValidationError("Document asset '$documentAssetId' was not found for this company."))
+
+        val alreadyAttached = dao.getDocumentReferencesForVoucher(companyId, voucherId)
+            .any { it.documentAssetId == documentAssetId }
+        if (alreadyAttached) return AccountingResult.Success(Unit)
+
         dao.insertVoucherDocumentReference(
             VoucherDocumentReferenceEntity(
                 referenceId = UUID.randomUUID().toString(),
@@ -116,6 +139,28 @@ class VoucherManagementServiceImpl(
         )
         return AccountingResult.Success(Unit)
     }
+
+    /**
+     * Removes one voucher attachment (Phase 7J-B.2) - unlink only. Deletes exactly the
+     * `voucher_document_references` row identified by [referenceId], scoped to [companyId]. Never
+     * deletes the [com.example.accounting.domain.rendering.DocumentAsset] row or its underlying
+     * file (the same asset may still be referenced by another voucher, or re-attached later), never
+     * touches the voucher or its journal items. Not part of the frozen [VoucherManagementService]
+     * interface - an additive convenience, matching [discardDraft]'s precedent.
+     */
+    suspend fun removeDocumentReference(companyId: String, referenceId: String): AccountingResult<Unit> {
+        val deletedRows = dao.deleteVoucherDocumentReference(companyId, referenceId)
+        if (deletedRows == 0) {
+            return AccountingResult.Failure(AppError.ResourceNotFound("VoucherDocumentReference", referenceId))
+        }
+        return AccountingResult.Success(Unit)
+    }
+
+    /** Read-only, joined attachment listing (Phase 7J-B.2) for a future attachments UI - an
+     * additive convenience, not part of the frozen [VoucherManagementService] interface, mirroring
+     * [listDrafts]'s precedent of exposing a read helper beyond the frozen contract. */
+    suspend fun getAttachmentsForVoucher(companyId: String, voucherId: String): List<VoucherAttachmentRow> =
+        dao.getVoucherAttachments(companyId, voucherId)
 
     /** Read-only draft listing (Phase 7J UI) - not part of the frozen [VoucherManagementService]
      * interface, an additive convenience mirroring

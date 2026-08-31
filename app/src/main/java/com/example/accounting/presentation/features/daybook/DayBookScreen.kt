@@ -20,6 +20,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.FilterList
+import androidx.compose.material.icons.filled.Print
 import androidx.compose.material.icons.filled.ReceiptLong
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Card
@@ -28,6 +29,7 @@ import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.OutlinedTextField
@@ -60,6 +62,7 @@ fun DayBookScreen(
     onOpenCreateVoucher: (VoucherType) -> Unit,
     onFilterTypeSelected: (VoucherType?) -> Unit,
     onSearchQueryChanged: (String) -> Unit,
+    onPrint: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     var searchQuery by remember { mutableStateOf("") }
@@ -144,14 +147,20 @@ fun DayBookScreen(
                         text = "Showing ${filteredVouchers.size} Entries",
                         style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold)
                     )
-                    Text(
-                        text = "Total: ${totalTurnover.format()}",
-                        style = MaterialTheme.typography.labelMedium.copy(
-                            fontWeight = FontWeight.Bold,
-                            fontFamily = FontFamily.Monospace,
-                            color = MaterialTheme.colorScheme.primary
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = "Total: ${totalTurnover.format()}",
+                            style = MaterialTheme.typography.labelMedium.copy(
+                                fontWeight = FontWeight.Bold,
+                                fontFamily = FontFamily.Monospace,
+                                color = MaterialTheme.colorScheme.primary
+                            )
                         )
-                    )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        IconButton(onClick = onPrint, modifier = Modifier.size(28.dp)) {
+                            Icon(Icons.Default.Print, contentDescription = "Print Day Book", modifier = Modifier.size(18.dp))
+                        }
+                    }
                 }
             }
 

@@ -48,6 +48,13 @@ data class BusinessProfile(
     val legalName: String = businessName,
     val constitutionType: ConstitutionType = ConstitutionType.PROPRIETORSHIP,
     val address: String = "",
+    /** Structured, additive alongside [address] (the street/locality free-text line) - filled
+     * either by hand or via [com.example.accounting.domain.profile.PinCodeLookupAdapter] off
+     * [pinCode]. Never inferred from anything else (company state code, device locale, etc.). */
+    val pinCode: String = "",
+    val city: String = "",
+    val state: String = "",
+    val country: String = "",
     val phone: String = "",
     val email: String = "",
     val website: String = "",
@@ -87,6 +94,10 @@ data class IndividualProfile(
     val companyId: String,
     val name: String,
     val address: String = "",
+    val pinCode: String = "",
+    val city: String = "",
+    val state: String = "",
+    val country: String = "",
     val pan: String = "",
     val phone: String = "",
     val email: String = "",

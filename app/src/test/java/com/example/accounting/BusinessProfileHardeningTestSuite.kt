@@ -39,7 +39,7 @@ class BusinessProfileHardeningTestSuite {
         override suspend fun insertBusinessProfile(profile: BusinessProfileEntity) { businessProfiles[profile.companyId] = profile }
         override suspend fun updateBusinessProfile(
             companyId: String, businessProfileId: String, businessName: String, legalName: String,
-            constitutionType: ConstitutionType, address: String,
+            constitutionType: ConstitutionType, address: String, pinCode: String, city: String, state: String, country: String,
             phone: String, email: String, website: String, gstin: String, pan: String, tan: String, udyam: String, logoAssetId: String?,
             bankName: String, bankAccountNumber: String, bankIfsc: String, bankBranch: String, upiId: String,
             qrCodeAssetId: String?, signatureAssetId: String?, termsAndConditions: String, updatedAt: Long
@@ -48,6 +48,7 @@ class BusinessProfileHardeningTestSuite {
             if (existing.businessProfileId != businessProfileId) return
             businessProfiles[companyId] = existing.copy(
                 businessName = businessName, legalName = legalName, constitutionType = constitutionType, address = address,
+                pinCode = pinCode, city = city, state = state, country = country,
                 phone = phone, email = email, website = website, gstin = gstin, pan = pan, tan = tan, udyam = udyam,
                 logoAssetId = logoAssetId, bankName = bankName, bankAccountNumber = bankAccountNumber, bankIfsc = bankIfsc,
                 bankBranch = bankBranch, upiId = upiId, qrCodeAssetId = qrCodeAssetId, signatureAssetId = signatureAssetId,

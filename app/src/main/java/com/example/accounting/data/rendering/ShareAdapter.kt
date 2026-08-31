@@ -12,7 +12,10 @@ import java.io.File
  * `com.example.accounting.fileprovider` `<provider>` declared in `AndroidManifest.xml`.
  */
 object ShareAdapter {
-    private const val FILE_PROVIDER_AUTHORITY = "com.example.accounting.fileprovider"
+    /** Public (Phase 7J-B.2 Slice 2) so a caller building its own non-SEND intent (e.g. an
+     * ACTION_VIEW "Open externally" for an attachment) can resolve the same [android.net.Uri]
+     * without duplicating this authority string. */
+    const val FILE_PROVIDER_AUTHORITY = "com.example.accounting.fileprovider"
 
     fun buildShareIntent(context: Context, file: File, mimeType: String = "application/pdf"): Intent {
         val uri = FileProvider.getUriForFile(context, FILE_PROVIDER_AUTHORITY, file)

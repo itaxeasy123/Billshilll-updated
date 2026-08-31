@@ -30,6 +30,7 @@ import androidx.compose.material.icons.filled.CloudDone
 import androidx.compose.material.icons.filled.CloudSync
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
+import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material3.Badge
@@ -74,6 +75,7 @@ fun AppTopBar(
     onNewCompanyClicked: () -> Unit,
     onSearchClicked: () -> Unit = {},
     onProfileClicked: () -> Unit = {},
+    onMenuClicked: () -> Unit = {},
     canGoBack: Boolean = false,
     onBack: () -> Unit = {},
     modifier: Modifier = Modifier
@@ -104,6 +106,10 @@ fun AppTopBar(
                 if (canGoBack) {
                     IconButton(onClick = onBack, modifier = Modifier.testTag("top_bar_back")) {
                         Icon(imageVector = Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    }
+                } else {
+                    IconButton(onClick = onMenuClicked, modifier = Modifier.testTag("top_bar_menu")) {
+                        Icon(imageVector = Icons.Default.Menu, contentDescription = "Menu")
                     }
                 }
                 // Company & Brand Selector - own full-width row so a long name/GSTIN never has to
@@ -171,7 +177,7 @@ fun AppTopBar(
                         onDismissRequest = { companyDropdownOpen = false }
                     ) {
                         Text(
-                            text = "Select Company Tenant",
+                            text = "Select Company",
                             style = MaterialTheme.typography.labelMedium.copy(color = MaterialTheme.colorScheme.primary),
                             modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
                         )

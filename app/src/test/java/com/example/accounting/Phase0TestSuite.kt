@@ -192,7 +192,7 @@ class Phase0TestSuite {
     // ==========================================
     @Test
     fun testRoomDatabaseCreation_Invariants() {
-        // AppDatabase class must exist. Schema is now version 13 (Phase 4: inventory tables +
+        // AppDatabase class must exist. Schema is now version 15 (Phase 4: inventory tables +
         // company accountingMode/businessType columns; Phase 5: GST transactions/settlement
         // allocations/GST filing periods + voucher referenceVoucherId/paymentMode columns; Phase
         // 7A: parties/invoices/invoice_lines tables; Phase 7B: trade_documents/trade_document_lines
@@ -204,10 +204,16 @@ class Phase0TestSuite {
         // company_subscriptions/bank_upi_profiles tables; GST Settings: company gstEnabled column;
         // Architecture Checkpoint: gst_transactions.voucherId relaxed to nullable; Rule 30: Party
         // Data Validation: ledgers.gstRegistrationStatus column; Rule 31: Purchase/RCM Foundation:
-        // gst_transactions.chargeType column), backed by exactly twelve explicit, non-destructive
-        // migrations - see testMigrationInfrastructure_ExplicitRegistry.
+        // gst_transactions.chargeType column; Rule 33: GST Return Dashboard & Filing Foundation:
+        // companies.gstScheme column + gst_returns/gst_return_artifacts/gst_return_sections/
+        // gst_return_submissions tables; Rule 33 redesign: companies.gstFilingFrequency column;
+        // PIN-code address lookup: business_profiles/individual_profiles pinCode/city/state/
+        // country columns; Phase 7J-B.2: voucher_document_references.(voucherId, documentAssetId)
+        // unique index; D1a: companies.gstOperatingMode column; D1b: gst_transactions.supplyNature/
+        // transactionGroupId/transactionDate/partyGstRegistrationStatus columns), backed by exactly
+        // eighteen explicit, non-destructive migrations - see testMigrationInfrastructure_ExplicitRegistry.
         assertNotNull(AppDatabase::class.java)
-        assertEquals(12, AppDatabase.ALL_MIGRATIONS.size)
+        assertEquals(18, AppDatabase.ALL_MIGRATIONS.size)
     }
 
     // ==========================================
@@ -217,7 +223,7 @@ class Phase0TestSuite {
     fun testMigrationInfrastructure_ExplicitRegistry() {
         val migrations = AppDatabase.ALL_MIGRATIONS
         assertNotNull("Explicit migrations array must be defined", migrations)
-        assertEquals("Version 1->2 (Phase 4), 2->3 (Phase 5), 3->4 (Phase 7A), 4->5 (Phase 7B), 5->6 (Phase 7D), 6->7 (Business Profile hardening), 7->8 (Phase 7F: Recurring Voucher Engine), 8->9 (Phase 7J-B: Management Layer), 9->10 (GST Settings: company gstEnabled column), 10->11 (Architecture Checkpoint: gst_transactions.voucherId relaxed to nullable), 11->12 (Rule 30: Party Data Validation - ledgers.gstRegistrationStatus column), and 12->13 (Rule 31: Purchase/RCM Foundation - gst_transactions.chargeType column) are the only migrations registered so far", 12, migrations.size)
+        assertEquals("Version 1->2 (Phase 4), 2->3 (Phase 5), 3->4 (Phase 7A), 4->5 (Phase 7B), 5->6 (Phase 7D), 6->7 (Business Profile hardening), 7->8 (Phase 7F: Recurring Voucher Engine), 8->9 (Phase 7J-B: Management Layer), 9->10 (GST Settings: company gstEnabled column), 10->11 (Architecture Checkpoint: gst_transactions.voucherId relaxed to nullable), 11->12 (Rule 30: Party Data Validation - ledgers.gstRegistrationStatus column), 12->13 (Rule 31: Purchase/RCM Foundation - gst_transactions.chargeType column), 13->14 (Rule 33: GST Return Dashboard & Filing Foundation - companies.gstScheme column + gst_returns/gst_return_artifacts/gst_return_sections/gst_return_submissions tables), 14->15 (Rule 33 redesign: companies.gstFilingFrequency column), 15->16 (PIN-code address lookup: business_profiles/individual_profiles pinCode/city/state/country columns), 16->17 (Phase 7J-B.2: voucher_document_references.(voucherId, documentAssetId) unique index), 17->18 (D1a: companies.gstOperatingMode column), and 18->19 (D1b: gst_transactions.supplyNature/transactionGroupId/transactionDate/partyGstRegistrationStatus columns) are the only migrations registered so far", 18, migrations.size)
         assertEquals(1, migrations[0].startVersion)
         assertEquals(2, migrations[0].endVersion)
         assertEquals(2, migrations[1].startVersion)
@@ -242,6 +248,18 @@ class Phase0TestSuite {
         assertEquals(12, migrations[10].endVersion)
         assertEquals(12, migrations[11].startVersion)
         assertEquals(13, migrations[11].endVersion)
+        assertEquals(13, migrations[12].startVersion)
+        assertEquals(14, migrations[12].endVersion)
+        assertEquals(14, migrations[13].startVersion)
+        assertEquals(15, migrations[13].endVersion)
+        assertEquals(15, migrations[14].startVersion)
+        assertEquals(16, migrations[14].endVersion)
+        assertEquals(16, migrations[15].startVersion)
+        assertEquals(17, migrations[15].endVersion)
+        assertEquals(17, migrations[16].startVersion)
+        assertEquals(18, migrations[16].endVersion)
+        assertEquals(18, migrations[17].startVersion)
+        assertEquals(19, migrations[17].endVersion)
     }
 
     // ==========================================
@@ -538,6 +556,7 @@ class FakeAccountingDao : AccountingDao {
     // GST-filing-period data. Phase5TestSuite.kt backs these with a real decorator instead.
     override suspend fun getGstTransactionsForVoucher(voucherId: String): List<com.example.accounting.data.local.entity.GstTransactionEntity> = emptyList()
     override suspend fun getGstTransactionsForCompanyFY(companyId: String, fyId: String): List<com.example.accounting.data.local.entity.GstTransactionEntity> = emptyList()
+    override suspend fun getGstTransactionsByGroupId(companyId: String, groupId: String): List<com.example.accounting.data.local.entity.GstTransactionEntity> = emptyList()
     override suspend fun insertGstTransactions(transactions: List<com.example.accounting.data.local.entity.GstTransactionEntity>) {}
     override suspend fun getAllocationsForInvoice(invoiceVoucherId: String): List<com.example.accounting.data.local.entity.SettlementAllocationEntity> = emptyList()
     override suspend fun getAllocationsForSettlement(settlementVoucherId: String): List<com.example.accounting.data.local.entity.SettlementAllocationEntity> = emptyList()
@@ -595,6 +614,7 @@ class FakeAccountingDao : AccountingDao {
     override suspend fun updateBusinessProfile(
         companyId: String, businessProfileId: String, businessName: String, legalName: String,
         constitutionType: com.example.accounting.domain.rendering.ConstitutionType, address: String,
+        pinCode: String, city: String, state: String, country: String,
         phone: String, email: String, website: String, gstin: String, pan: String, tan: String, udyam: String, logoAssetId: String?,
         bankName: String, bankAccountNumber: String, bankIfsc: String, bankBranch: String, upiId: String,
         qrCodeAssetId: String?, signatureAssetId: String?, termsAndConditions: String, updatedAt: Long
@@ -602,12 +622,14 @@ class FakeAccountingDao : AccountingDao {
     override suspend fun getIndividualProfile(companyId: String): com.example.accounting.data.local.entity.IndividualProfileEntity? = null
     override suspend fun insertIndividualProfile(profile: com.example.accounting.data.local.entity.IndividualProfileEntity) {}
     override suspend fun updateIndividualProfile(
-        companyId: String, individualProfileId: String, name: String, address: String, pan: String,
+        companyId: String, individualProfileId: String, name: String, address: String,
+        pinCode: String, city: String, state: String, country: String, pan: String,
         phone: String, email: String, signatureAssetId: String?, termsAndConditions: String, updatedAt: Long
     ) {}
     override fun getDocumentAssetsByCompany(companyId: String) = flowOf(emptyList<com.example.accounting.data.local.entity.DocumentAssetEntity>())
     override suspend fun getDocumentAssetById(companyId: String, assetId: String): com.example.accounting.data.local.entity.DocumentAssetEntity? = null
     override suspend fun insertDocumentAsset(asset: com.example.accounting.data.local.entity.DocumentAssetEntity) {}
+    override suspend fun deleteDocumentAsset(companyId: String, assetId: String): Int = 0
     override fun getRenderedDocumentRecords(companyId: String, documentId: String) = flowOf(emptyList<com.example.accounting.data.local.entity.RenderedDocumentRecordEntity>())
     override suspend fun insertRenderedDocumentRecord(record: com.example.accounting.data.local.entity.RenderedDocumentRecordEntity) {}
 
@@ -636,6 +658,8 @@ class FakeAccountingDao : AccountingDao {
     override suspend fun deleteLinesForVoucherDraft(draftId: String) {}
     override suspend fun insertVoucherDocumentReference(reference: com.example.accounting.data.local.entity.VoucherDocumentReferenceEntity) {}
     override suspend fun getDocumentReferencesForVoucher(companyId: String, voucherId: String): List<com.example.accounting.data.local.entity.VoucherDocumentReferenceEntity> = emptyList()
+    override suspend fun deleteVoucherDocumentReference(companyId: String, referenceId: String): Int = 0
+    override suspend fun getVoucherAttachments(companyId: String, voucherId: String): List<com.example.accounting.data.local.dao.VoucherAttachmentRow> = emptyList()
     override suspend fun getSubscriptionForCompanyAndFy(companyId: String, financialYearId: String): com.example.accounting.data.local.entity.CompanySubscriptionEntity? = null
     override fun getSubscriptionsForCompany(companyId: String) = flowOf(emptyList<com.example.accounting.data.local.entity.CompanySubscriptionEntity>())
     override suspend fun insertSubscription(subscription: com.example.accounting.data.local.entity.CompanySubscriptionEntity) {}
@@ -646,6 +670,19 @@ class FakeAccountingDao : AccountingDao {
     override suspend fun insertBankUpiProfile(profile: com.example.accounting.data.local.entity.BankUpiProfileEntity) {}
     override suspend fun updateBankUpiProfile(profile: com.example.accounting.data.local.entity.BankUpiProfileEntity) {}
     override suspend fun deleteBankUpiProfile(companyId: String, bankUpiProfileId: String): Int = 0
+
+    override fun getGstReturnsForCompany(companyId: String) = flowOf(emptyList<com.example.accounting.data.local.entity.GstReturnEntity>())
+    override suspend fun getGstReturnById(companyId: String, gstReturnId: String): com.example.accounting.data.local.entity.GstReturnEntity? = null
+    override suspend fun findGstReturn(companyId: String, periodKey: String, returnType: String, scheme: String): com.example.accounting.data.local.entity.GstReturnEntity? = null
+    override suspend fun insertGstReturn(gstReturn: com.example.accounting.data.local.entity.GstReturnEntity) {}
+    override suspend fun updateGstReturn(gstReturn: com.example.accounting.data.local.entity.GstReturnEntity) {}
+    override suspend fun getArtifactsForGstReturn(gstReturnId: String): List<com.example.accounting.data.local.entity.GstReturnArtifactEntity> = emptyList()
+    override suspend fun getGstReturnArtifactById(artifactId: String): com.example.accounting.data.local.entity.GstReturnArtifactEntity? = null
+    override suspend fun insertGstReturnArtifact(artifact: com.example.accounting.data.local.entity.GstReturnArtifactEntity) {}
+    override suspend fun getSectionsForGstReturn(gstReturnId: String): List<com.example.accounting.data.local.entity.GstReturnSectionEntity> = emptyList()
+    override suspend fun upsertGstReturnSection(section: com.example.accounting.data.local.entity.GstReturnSectionEntity) {}
+    override suspend fun getSubmissionsForGstReturn(gstReturnId: String): List<com.example.accounting.data.local.entity.GstReturnSubmissionEntity> = emptyList()
+    override suspend fun insertGstReturnSubmission(submission: com.example.accounting.data.local.entity.GstReturnSubmissionEntity) {}
 
     override fun getAuditLogsByCompany(companyId: String) = flowOf(emptyList<com.example.accounting.data.local.entity.AuditLogEntity>())
     override suspend fun insertAuditLog(log: com.example.accounting.data.local.entity.AuditLogEntity) {}

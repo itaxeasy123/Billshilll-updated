@@ -42,6 +42,33 @@ data class Company(
      * "GST disabled" state nothing about their actual data or configuration ever chose.
      */
     val gstEnabled: Boolean = true,
+    /**
+     * D1a (Company Mode + Account-Only Sale/Purchase) - see [GstOperatingMode] for the full
+     * rationale. Defaults to `ACCOUNT_WITH_GST`, not `ACCOUNT_ONLY` - the same reasoning as
+     * [gstEnabled]'s own default: every company that existed before this field was added already
+     * behaves as "GST applies to Sale/Purchase/Notes" today, so `ACCOUNT_WITH_GST` is the only
+     * default that reproduces that unchanged. New companies may still choose `ACCOUNT_ONLY` at
+     * creation time.
+     */
+    val gstOperatingMode: GstOperatingMode = GstOperatingMode.ACCOUNT_WITH_GST,
+    /**
+     * Rule 33 (GST Return Dashboard & Filing Foundation) - this company's GST registration scheme
+     * (Regular/Composition/QRMP), the single authoritative source the Return Dashboard reads from.
+     * No such field existed anywhere on the company's statutory profile before this - every
+     * pre-existing company defaults to REGULAR, the ordinary/most common scheme and the only one
+     * that reproduces every prior company's unchanged filing expectations (a silent default of
+     * COMPOSITION or QRMP would misrepresent real companies that never chose either).
+     */
+    val gstScheme: com.example.accounting.domain.taxation.gstreturn.GstScheme =
+        com.example.accounting.domain.taxation.gstreturn.GstScheme.REGULAR,
+    /**
+     * Rule 33 - filing frequency for a REGULAR company (Monthly, the statutory default, or QRMP's
+     * quarterly option for taxpayers under the turnover threshold). Meaningless for COMPOSITION
+     * (GSTR-4 is always quarterly) - reuses [com.example.accounting.domain.taxation.gstreturn.GstReturnPeriodicity]
+     * rather than a new enum, since it is exactly that same MONTHLY/QUARTERLY choice.
+     */
+    val gstFilingFrequency: com.example.accounting.domain.taxation.gstreturn.GstReturnPeriodicity =
+        com.example.accounting.domain.taxation.gstreturn.GstReturnPeriodicity.MONTHLY,
     val status: CompanyStatus = CompanyStatus.ACTIVE,
     val isDefault: Boolean = false,
     val createdAt: Long = System.currentTimeMillis(),

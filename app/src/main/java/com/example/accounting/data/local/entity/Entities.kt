@@ -12,6 +12,7 @@ import com.example.accounting.domain.accounting.VoucherType
 import com.example.accounting.domain.audit.AuditAction
 import com.example.accounting.domain.company.AccountingMode
 import com.example.accounting.domain.company.BusinessType
+import com.example.accounting.domain.company.GstOperatingMode
 import com.example.accounting.domain.document.DocumentStatus
 import com.example.accounting.domain.document.DocumentType
 import com.example.accounting.domain.financialyear.PeriodStatus
@@ -31,6 +32,13 @@ import com.example.accounting.domain.taxation.gst.GstChargeType
 import com.example.accounting.domain.taxation.gst.GstDirection
 import com.example.accounting.domain.taxation.gst.GstSupplyNature
 import com.example.accounting.domain.taxation.gst.SupplyType
+import com.example.accounting.domain.taxation.gstreturn.GstFilingMode
+import com.example.accounting.domain.taxation.gstreturn.GstReturnArtifactType
+import com.example.accounting.domain.taxation.gstreturn.GstReturnPeriodicity
+import com.example.accounting.domain.taxation.gstreturn.GstReturnSectionStatus
+import com.example.accounting.domain.taxation.gstreturn.GstReturnStatus
+import com.example.accounting.domain.taxation.gstreturn.GstReturnType
+import com.example.accounting.domain.taxation.gstreturn.GstScheme
 
 @Entity(tableName = "companies")
 data class CompanyEntity(
@@ -50,7 +58,14 @@ data class CompanyEntity(
     val createdAt: Long,
     val accountingMode: AccountingMode = AccountingMode.ACCOUNT_ONLY,
     val businessType: BusinessType = BusinessType.TRADING,
-    val gstEnabled: Boolean = true
+    val gstEnabled: Boolean = true,
+    /** D1a - see [com.example.accounting.domain.company.Company.gstOperatingMode]. */
+    val gstOperatingMode: GstOperatingMode = GstOperatingMode.ACCOUNT_WITH_GST,
+    /** Rule 33 (GST Return Dashboard & Filing Foundation) - see
+     * [com.example.accounting.domain.company.Company.gstScheme]. */
+    val gstScheme: GstScheme = GstScheme.REGULAR,
+    /** Rule 33 - see [com.example.accounting.domain.company.Company.gstFilingFrequency]. */
+    val gstFilingFrequency: GstReturnPeriodicity = GstReturnPeriodicity.MONTHLY
 )
 
 @Entity(
@@ -474,11 +489,27 @@ data class GstTransactionEntity(
      * Defaults to FORWARD_CHARGE - every pre-existing row (RCM never existed before this) really
      * was forward-charge, so the migration backfill default is a genuine fact, not a guess. */
     val chargeType: GstChargeType = GstChargeType.FORWARD_CHARGE,
-    /** Rule 33 (GST Reporting Foundation) - see [com.example.accounting.domain.taxation.gst.GstTransaction.supplyNature].
-     * Defaults to NORMAL; the migration backfill derives the real value from the already-persisted
-     * [supplyType] where possible (EXPORT->EXPORT, EXEMPT->EXEMPT, INTRA/INTER_STATE->NORMAL) - only
-     * a pre-existing EXEMPT row's Exempt-vs-Nil-Rated distinction is unrecoverable. */
-    val supplyNature: GstSupplyNature = GstSupplyNature.NORMAL
+    /** D1b - see [com.example.accounting.domain.taxation.gst.GstTransaction.supplyNature]. Defaults
+     * to NORMAL; `MIGRATION_18_19` backfills existing rows from their own `supplyType` (see that
+     * migration's own comment for the exact, disclosed EXEMPT-vs-NIL_RATED limitation). */
+    val supplyNature: GstSupplyNature = GstSupplyNature.NORMAL,
+    /** D1b - see [com.example.accounting.domain.taxation.gst.GstTransaction.transactionGroupId].
+     * Never blank in practice - `MIGRATION_18_19` backfills every existing row from its own
+     * `voucherId` (accounting-integrated) or, failing that, its own `gstTransactionId` (a
+     * pre-migration GST-only row, treated as its own one-line group - none exist in production
+     * per the D1a-era audit, but this is still the honest, non-destructive backfill). */
+    val transactionGroupId: String = "",
+    /** D1b - see [com.example.accounting.domain.taxation.gst.GstTransaction.transactionDate]. ISO-
+     * 8601 (`YYYY-MM-DD`), matching [VoucherEntity.date]'s own convention - `null` for every
+     * accounting-integrated row (unchanged; that row's real date is [VoucherEntity.date] via the
+     * join), always a real value for a GST-only row. */
+    val transactionDate: String? = null,
+    /** D1b - see [com.example.accounting.domain.taxation.gst.GstTransaction.partyGstRegistrationStatus].
+     * Stores [com.example.accounting.domain.accounting.GstRegistrationStatus.name], or `null` for
+     * UNKNOWN - the exact same plain-nullable-String convention [LedgerEntity.gstRegistrationStatus]
+     * already uses (manual `.name`/`.valueOf()` mapping at the repository boundary, no Room
+     * converter), deliberately mirrored rather than introduced as a second pattern. */
+    val partyGstRegistrationStatus: String? = null
 )
 
 /**
@@ -762,6 +793,10 @@ data class BusinessProfileEntity(
     val legalName: String,
     val constitutionType: ConstitutionType = ConstitutionType.PROPRIETORSHIP,
     val address: String,
+    val pinCode: String = "",
+    val city: String = "",
+    val state: String = "",
+    val country: String = "",
     val phone: String,
     val email: String,
     val website: String,
@@ -795,6 +830,10 @@ data class IndividualProfileEntity(
     val companyId: String,
     val name: String,
     val address: String,
+    val pinCode: String = "",
+    val city: String = "",
+    val state: String = "",
+    val country: String = "",
     val pan: String,
     val phone: String,
     val email: String,
@@ -977,11 +1016,15 @@ data class VoucherDraftLineEntity(
  * receipt image) - metadata only, zero accounting effect. Deliberately its own small join table
  * rather than repurposing [RenderedDocumentRecordEntity] (Phase 7D), which logs a *rendered output*
  * of a document, not an *attached input* to one - different semantics, kept separate.
+ *
+ * The `(voucherId, documentAssetId)` unique index (Phase 7J-B.2) makes an exact duplicate
+ * attachment a DB-level impossibility, never just a UI/service-layer convention - the same asset
+ * MAY still be attached to a *different* voucher (many-to-many), only the exact pair is unique.
  */
 @Entity(
     tableName = "voucher_document_references",
     foreignKeys = [ForeignKey(entity = CompanyEntity::class, parentColumns = ["companyId"], childColumns = ["companyId"], onDelete = ForeignKey.CASCADE)],
-    indices = [Index("companyId"), Index("voucherId")]
+    indices = [Index("companyId"), Index("voucherId"), Index(value = ["voucherId", "documentAssetId"], unique = true)]
 )
 data class VoucherDocumentReferenceEntity(
     @PrimaryKey val referenceId: String,
@@ -1046,4 +1089,107 @@ data class BankUpiProfileEntity(
     val upiIsVerified: Boolean,
     val createdAt: Long,
     val updatedAt: Long
+)
+
+/**
+ * Rule 33 (GST Return Dashboard & Filing Foundation) - one GST return's identity/period/scheme/
+ * lifecycle. See [com.example.accounting.domain.taxation.gstreturn.GstReturn] for the full
+ * rationale; this is its 1:1 persisted shape. Deliberately outside the double-entry stream - no
+ * [VoucherEntity]/[JournalItemEntity] foreign key, since a return is a filing-workflow record, not
+ * an accounting posting.
+ */
+@Entity(
+    tableName = "gst_returns",
+    foreignKeys = [
+        ForeignKey(entity = CompanyEntity::class, parentColumns = ["companyId"], childColumns = ["companyId"], onDelete = ForeignKey.CASCADE),
+        ForeignKey(entity = FinancialYearEntity::class, parentColumns = ["financialYearId"], childColumns = ["financialYearId"], onDelete = ForeignKey.CASCADE)
+    ],
+    indices = [Index("companyId"), Index("financialYearId"), Index(value = ["companyId", "periodKey", "returnType", "scheme"])]
+)
+data class GstReturnEntity(
+    @PrimaryKey val gstReturnId: String,
+    val companyId: String,
+    val financialYearId: String,
+    val fyCode: String,
+    val quarter: String,
+    val month: Int?,
+    val periodKey: String,
+    val scheme: GstScheme,
+    val returnType: GstReturnType,
+    val periodicity: GstReturnPeriodicity,
+    val filingMode: GstFilingMode,
+    val status: GstReturnStatus,
+    val createdAt: Long,
+    val updatedAt: Long,
+    val submittedAt: Long?,
+    val acknowledgementNumber: String?,
+    val errorCode: String?,
+    val errorMessage: String?,
+    val latestRequestArtifactId: String?,
+    val latestResponseArtifactId: String?,
+    val schemaVersion: String
+)
+
+/**
+ * Rule 33 - one versioned JSON artifact (request or response) belonging to a [GstReturnEntity].
+ * See [com.example.accounting.domain.taxation.gstreturn.GstReturnArtifact]. Never updated in place -
+ * every generate/import inserts a new row, preserving history (Section 16).
+ */
+@Entity(
+    tableName = "gst_return_artifacts",
+    foreignKeys = [ForeignKey(entity = GstReturnEntity::class, parentColumns = ["gstReturnId"], childColumns = ["gstReturnId"], onDelete = ForeignKey.CASCADE)],
+    indices = [Index("gstReturnId")]
+)
+data class GstReturnArtifactEntity(
+    @PrimaryKey val artifactId: String,
+    val gstReturnId: String,
+    val artifactType: GstReturnArtifactType,
+    val schemaVersion: String,
+    val jsonContent: String,
+    val createdAt: Long
+)
+
+/**
+ * Rule 33 - one section's preparation/validation result within a [GstReturnEntity]. See
+ * [com.example.accounting.domain.taxation.gstreturn.GstReturnSection]. [sectionKey] is caller-
+ * supplied and generic - never a statutory GSTR table name invented by this foundation.
+ */
+@Entity(
+    tableName = "gst_return_sections",
+    foreignKeys = [ForeignKey(entity = GstReturnEntity::class, parentColumns = ["gstReturnId"], childColumns = ["gstReturnId"], onDelete = ForeignKey.CASCADE)],
+    indices = [Index("gstReturnId"), Index(value = ["gstReturnId", "sectionKey"], unique = true)]
+)
+data class GstReturnSectionEntity(
+    @PrimaryKey val sectionId: String,
+    val gstReturnId: String,
+    val sectionKey: String,
+    val status: GstReturnSectionStatus,
+    val resultDataJson: String?,
+    val errorsJson: String?,
+    val updatedAt: Long
+)
+
+/**
+ * Rule 33 - one online-filing attempt's history for a [GstReturnEntity]. See
+ * [com.example.accounting.domain.taxation.gstreturn.GstReturnSubmission]. Every (re)submission
+ * inserts a new row; [GstReturnEntity]'s own status/acknowledgement fields only ever reflect the
+ * latest attempt.
+ */
+@Entity(
+    tableName = "gst_return_submissions",
+    foreignKeys = [ForeignKey(entity = GstReturnEntity::class, parentColumns = ["gstReturnId"], childColumns = ["gstReturnId"], onDelete = ForeignKey.CASCADE)],
+    indices = [Index("gstReturnId")]
+)
+data class GstReturnSubmissionEntity(
+    @PrimaryKey val submissionId: String,
+    val gstReturnId: String,
+    val attemptNumber: Int,
+    val requestArtifactId: String?,
+    val responseArtifactId: String?,
+    val status: GstReturnStatus,
+    val acknowledgementNumber: String?,
+    val errorCode: String?,
+    val errorMessage: String?,
+    val submittedAt: Long,
+    val respondedAt: Long?
 )

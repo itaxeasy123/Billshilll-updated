@@ -10,6 +10,7 @@ import com.example.accounting.domain.accounting.VoucherType
 import com.example.accounting.domain.audit.AuditAction
 import com.example.accounting.domain.company.AccountingMode
 import com.example.accounting.domain.company.BusinessType
+import com.example.accounting.domain.company.GstOperatingMode
 import com.example.accounting.domain.document.DocumentStatus
 import com.example.accounting.domain.document.DocumentType
 import com.example.accounting.domain.financialyear.PeriodStatus
@@ -27,7 +28,15 @@ import com.example.accounting.domain.rendering.TemplateStatus
 import com.example.accounting.domain.subscription.SubscriptionPlanType
 import com.example.accounting.domain.taxation.gst.GstChargeType
 import com.example.accounting.domain.taxation.gst.GstDirection
+import com.example.accounting.domain.taxation.gst.GstSupplyNature
 import com.example.accounting.domain.taxation.gst.SupplyType
+import com.example.accounting.domain.taxation.gstreturn.GstFilingMode
+import com.example.accounting.domain.taxation.gstreturn.GstReturnArtifactType
+import com.example.accounting.domain.taxation.gstreturn.GstReturnPeriodicity
+import com.example.accounting.domain.taxation.gstreturn.GstReturnSectionStatus
+import com.example.accounting.domain.taxation.gstreturn.GstReturnStatus
+import com.example.accounting.domain.taxation.gstreturn.GstReturnType
+import com.example.accounting.domain.taxation.gstreturn.GstScheme
 import java.time.LocalDate
 
 class RoomConverters {
@@ -99,6 +108,13 @@ class RoomConverters {
     fun toBusinessType(value: String): BusinessType = try { BusinessType.valueOf(value) } catch (e: Exception) { BusinessType.TRADING }
 
     @TypeConverter
+    fun fromGstOperatingMode(value: GstOperatingMode): String = value.name
+
+    @TypeConverter
+    fun toGstOperatingMode(value: String): GstOperatingMode =
+        try { GstOperatingMode.valueOf(value) } catch (e: Exception) { GstOperatingMode.ACCOUNT_WITH_GST }
+
+    @TypeConverter
     fun fromStockDirection(value: StockDirection): String = value.name
 
     @TypeConverter
@@ -127,6 +143,12 @@ class RoomConverters {
 
     @TypeConverter
     fun toGstChargeType(value: String): GstChargeType = try { GstChargeType.valueOf(value) } catch (e: Exception) { GstChargeType.FORWARD_CHARGE }
+
+    @TypeConverter
+    fun fromGstSupplyNature(value: GstSupplyNature): String = value.name
+
+    @TypeConverter
+    fun toGstSupplyNature(value: String): GstSupplyNature = try { GstSupplyNature.valueOf(value) } catch (e: Exception) { GstSupplyNature.NORMAL }
 
     // ==================== Phase 7A: Party + Invoice ====================
     @TypeConverter
@@ -208,4 +230,47 @@ class RoomConverters {
 
     @TypeConverter
     fun toSubscriptionPlanType(value: String): SubscriptionPlanType = try { SubscriptionPlanType.valueOf(value) } catch (e: Exception) { SubscriptionPlanType.FREE }
+
+    // ==================== Rule 33: GST Return Dashboard & Filing Foundation ====================
+    @TypeConverter
+    fun fromGstScheme(value: GstScheme): String = value.name
+
+    @TypeConverter
+    fun toGstScheme(value: String): GstScheme = try { GstScheme.valueOf(value) } catch (e: Exception) { GstScheme.REGULAR }
+
+    @TypeConverter
+    fun fromGstReturnType(value: GstReturnType): String = value.name
+
+    @TypeConverter
+    fun toGstReturnType(value: String): GstReturnType = GstReturnType.valueOf(value)
+
+    @TypeConverter
+    fun fromGstReturnPeriodicity(value: GstReturnPeriodicity): String = value.name
+
+    @TypeConverter
+    fun toGstReturnPeriodicity(value: String): GstReturnPeriodicity = GstReturnPeriodicity.valueOf(value)
+
+    @TypeConverter
+    fun fromGstFilingMode(value: GstFilingMode): String = value.name
+
+    @TypeConverter
+    fun toGstFilingMode(value: String): GstFilingMode = GstFilingMode.valueOf(value)
+
+    @TypeConverter
+    fun fromGstReturnStatus(value: GstReturnStatus): String = value.name
+
+    @TypeConverter
+    fun toGstReturnStatus(value: String): GstReturnStatus = GstReturnStatus.valueOf(value)
+
+    @TypeConverter
+    fun fromGstReturnArtifactType(value: GstReturnArtifactType): String = value.name
+
+    @TypeConverter
+    fun toGstReturnArtifactType(value: String): GstReturnArtifactType = GstReturnArtifactType.valueOf(value)
+
+    @TypeConverter
+    fun fromGstReturnSectionStatus(value: GstReturnSectionStatus): String = value.name
+
+    @TypeConverter
+    fun toGstReturnSectionStatus(value: String): GstReturnSectionStatus = GstReturnSectionStatus.valueOf(value)
 }

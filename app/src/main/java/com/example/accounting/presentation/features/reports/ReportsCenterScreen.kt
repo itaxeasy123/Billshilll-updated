@@ -16,6 +16,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.FileDownload
+import androidx.compose.material.icons.filled.Print
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -67,6 +68,8 @@ fun ReportsCenterScreen(
      * Statement/Day Book/Income & Expenditure have no `ExportType` today and never reach here. */
     onExportReport: (reportKey: String) -> Unit = {},
     onShareReport: (reportKey: String) -> Unit = {},
+    onPrintReport: (reportKey: String) -> Unit = {},
+    gstReturnActions: GstReturnDashboardActions,
     modifier: Modifier = Modifier
 ) {
     var category by remember { mutableStateOf<ReportCategory?>(null) }
@@ -93,10 +96,10 @@ fun ReportsCenterScreen(
         }
 
         when (category) {
-            ReportCategory.FINANCIAL -> FinancialCategory(uiState, onExportReport, onShareReport)
+            ReportCategory.FINANCIAL -> FinancialCategory(uiState, onExportReport, onShareReport, onPrintReport)
             ReportCategory.SALES_PURCHASE -> SalesPurchaseCategory(uiState)
             ReportCategory.ACCOUNTS -> AccountsCategory(uiState, onOpenDayBook, onOpenAllLedgers)
-            ReportCategory.GST -> GstCategory(uiState)
+            ReportCategory.GST -> GstCategory(uiState, gstReturnActions)
             ReportCategory.ANALYSIS -> AnalysisCategory(uiState)
             null -> {}
         }
@@ -104,7 +107,7 @@ fun ReportsCenterScreen(
 }
 
 @Composable
-private fun FinancialCategory(uiState: AccountingUiState, onExportReport: (String) -> Unit, onShareReport: (String) -> Unit) {
+private fun FinancialCategory(uiState: AccountingUiState, onExportReport: (String) -> Unit, onShareReport: (String) -> Unit, onPrintReport: (String) -> Unit) {
     var reportKey by remember { mutableStateOf<String?>(null) }
     if (reportKey == null) {
         ReportMenu(
@@ -119,11 +122,20 @@ private fun FinancialCategory(uiState: AccountingUiState, onExportReport: (Strin
     // unimplemented operation.
     val isServiceCompany = uiState.currentCompany?.businessType == BusinessType.SERVICE
     val supportsExportShare = reportKey == "Trial Balance" || reportKey == "Balance Sheet" || (reportKey == "Profit & Loss" && !isServiceCompany)
+    // Print/PDF is a self-contained path (TabularPdfRenderer, never ExportManagementService), so it
+    // covers the Service-company Income & Expenditure case too, unlike Export/Share above (JSON/CSV
+    // only exist for the Trading-company Profit & Loss shape).
+    val supportsPrint = reportKey == "Trial Balance" || reportKey == "Balance Sheet" || reportKey == "Profit & Loss"
     Column(modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
         BackRow(
             reportKey!!,
             onBack = { reportKey = null },
             actions = {
+                if (supportsPrint) {
+                    IconButton(onClick = { onPrintReport(reportKey!!) }) {
+                        Icon(Icons.Default.Print, contentDescription = "Print")
+                    }
+                }
                 if (supportsExportShare) {
                     IconButton(onClick = { onExportReport(reportKey!!) }) {
                         Icon(Icons.Default.FileDownload, contentDescription = "Export")
@@ -207,20 +219,68 @@ private fun AccountsCategory(uiState: AccountingUiState, onOpenDayBook: () -> Un
 }
 
 @Composable
-private fun GstCategory(uiState: AccountingUiState) {
+private fun GstCategory(uiState: AccountingUiState, gstReturnActions: GstReturnDashboardActions) {
     var reportKey by remember { mutableStateOf<String?>(null) }
     if (reportKey == null) {
-        ReportMenu(listOf("GST Summary" to true, "HSN/SAC Summary" to true)) { reportKey = it }
+        ReportMenu(listOf("GST Summary" to true, "HSN/SAC Summary" to true, "GST Return Dashboard" to true)) { reportKey = it }
         return
     }
     Column(modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
-        BackRow(reportKey!!, onBack = { reportKey = null })
+        BackRow(
+            if (reportKey == "GST Return Dashboard" && uiState.selectedGstReturn != null)
+                "${uiState.selectedGstReturn!!.returnType} - ${uiState.selectedGstReturn!!.periodKey}"
+            else reportKey!!,
+            onBack = {
+                if (reportKey == "GST Return Dashboard" && uiState.selectedGstReturn != null) gstReturnActions.onClearSelection()
+                else reportKey = null
+            }
+        )
         when (reportKey) {
             "GST Summary" -> GSTCenterView(report = uiState.gstSummary)
             "HSN/SAC Summary" -> HsnSacSummaryView(uiState.hsnSacSummary)
+            "GST Return Dashboard" -> GstReturnDashboardView(
+                uiState = uiState,
+                onSelectPeriod = gstReturnActions.onSelectPeriod,
+                onOpenReturn = gstReturnActions.onOpenReturn,
+                onClearSelection = gstReturnActions.onClearSelection,
+                onPrepare = gstReturnActions.onPrepare,
+                onValidate = gstReturnActions.onValidate,
+                onGenerateJson = gstReturnActions.onGenerateJson,
+                onShareArtifact = gstReturnActions.onShareArtifact,
+                onImportResponseFile = gstReturnActions.onImportResponseFile,
+                onMarkFiled = gstReturnActions.onMarkFiled,
+                onSubmitOnline = gstReturnActions.onSubmitOnline,
+                onUpdateGstEnabled = gstReturnActions.onUpdateGstEnabled,
+                onUpdateGstScheme = gstReturnActions.onUpdateGstScheme,
+                onUpdateGstFilingFrequency = gstReturnActions.onUpdateGstFilingFrequency
+            )
         }
     }
 }
+
+/** Groups the GST Return Dashboard's callbacks (Rule 33) so [ReportsCenterScreen]'s own signature
+ * doesn't grow by nine individual parameters most callers never touch. */
+data class GstReturnDashboardActions(
+    val onSelectPeriod: (
+        com.example.accounting.domain.taxation.gstreturn.GstQuarter,
+        Int?,
+        com.example.accounting.domain.taxation.gstreturn.GstReturnType,
+        com.example.accounting.domain.taxation.gstreturn.GstReturnPeriodicity,
+        com.example.accounting.domain.taxation.gstreturn.GstFilingMode
+    ) -> Unit,
+    val onOpenReturn: (String) -> Unit,
+    val onClearSelection: () -> Unit,
+    val onPrepare: () -> Unit,
+    val onValidate: () -> Unit,
+    val onGenerateJson: () -> Unit,
+    val onShareArtifact: (String) -> Unit,
+    val onImportResponseFile: () -> Unit,
+    val onMarkFiled: (String) -> Unit,
+    val onSubmitOnline: () -> Unit,
+    val onUpdateGstEnabled: (Boolean) -> Unit,
+    val onUpdateGstScheme: (com.example.accounting.domain.taxation.gstreturn.GstScheme) -> Unit,
+    val onUpdateGstFilingFrequency: (com.example.accounting.domain.taxation.gstreturn.GstReturnPeriodicity) -> Unit
+)
 
 @Composable
 private fun HsnSacSummaryView(rows: List<HsnSacSummaryRow>) {

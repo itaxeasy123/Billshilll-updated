@@ -59,6 +59,11 @@ class Phase7JBAwareDao(private val delegate: AccountingDao) : AccountingDao by d
     override suspend fun getDocumentAssetById(companyId: String, assetId: String) =
         documentAssets.firstOrNull { it.companyId == companyId && it.assetId == assetId }
     override suspend fun insertDocumentAsset(asset: DocumentAssetEntity) { documentAssets += asset }
+    override suspend fun deleteDocumentAsset(companyId: String, assetId: String): Int {
+        val existing = documentAssets.firstOrNull { it.companyId == companyId && it.assetId == assetId } ?: return 0
+        documentAssets.remove(existing)
+        return 1
+    }
 
     override suspend fun getVoucherDraftById(companyId: String, draftId: String) =
         voucherDrafts[draftId]?.takeIf { it.companyId == companyId }
@@ -70,9 +75,32 @@ class Phase7JBAwareDao(private val delegate: AccountingDao) : AccountingDao by d
         voucherDraftLines.filter { it.draftId == draftId }.sortedBy { it.lineOrder }
     override suspend fun insertVoucherDraftLines(lines: List<VoucherDraftLineEntity>) { voucherDraftLines += lines }
     override suspend fun deleteLinesForVoucherDraft(draftId: String) { voucherDraftLines.removeAll { it.draftId == draftId } }
-    override suspend fun insertVoucherDocumentReference(reference: VoucherDocumentReferenceEntity) { voucherDocumentReferences += reference }
+    override suspend fun insertVoucherDocumentReference(reference: VoucherDocumentReferenceEntity) {
+        // Mirrors the real DAO's OnConflictStrategy.IGNORE on the (voucherId, documentAssetId)
+        // unique index (MIGRATION_16_17) - a duplicate pair is silently dropped, original kept.
+        val duplicate = voucherDocumentReferences.any { it.voucherId == reference.voucherId && it.documentAssetId == reference.documentAssetId }
+        if (!duplicate) voucherDocumentReferences += reference
+    }
     override suspend fun getDocumentReferencesForVoucher(companyId: String, voucherId: String) =
         voucherDocumentReferences.filter { it.companyId == companyId && it.voucherId == voucherId }
+    override suspend fun deleteVoucherDocumentReference(companyId: String, referenceId: String): Int {
+        val existing = voucherDocumentReferences.firstOrNull { it.companyId == companyId && it.referenceId == referenceId }
+            ?: return 0
+        voucherDocumentReferences.remove(existing)
+        return 1
+    }
+    override suspend fun getVoucherAttachments(companyId: String, voucherId: String) =
+        voucherDocumentReferences
+            .filter { it.companyId == companyId && it.voucherId == voucherId }
+            .mapNotNull { ref ->
+                val asset = documentAssets.firstOrNull { it.assetId == ref.documentAssetId } ?: return@mapNotNull null
+                com.example.accounting.data.local.dao.VoucherAttachmentRow(
+                    referenceId = ref.referenceId, voucherId = ref.voucherId, documentAssetId = asset.assetId,
+                    type = asset.type, storageReference = asset.storageReference, checksum = asset.checksum,
+                    mimeType = asset.mimeType, sizeBytes = asset.sizeBytes, attachedAt = ref.createdAt
+                )
+            }
+            .sortedByDescending { it.attachedAt }
 
     override suspend fun getSubscriptionForCompanyAndFy(companyId: String, financialYearId: String) =
         subscriptions.values.firstOrNull { it.companyId == companyId && it.financialYearId == financialYearId }

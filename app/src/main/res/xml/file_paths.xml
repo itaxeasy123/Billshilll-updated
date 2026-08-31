@@ -7,4 +7,10 @@
          IllegalArgumentException for any file under cacheDir (confirmed live: this crashed the app
          the first time exportReportAndShare was ever wired to a real UI button). -->
     <cache-path name="exports" path="." />
+    <!-- Phase 7J-B.2 - AttachmentStorageAdapter writes durable voucher attachments to
+         context.filesDir/voucher_attachments/ (deliberately not cacheDir, see its own doc comment).
+         Without this entry, FileProvider.getUriForFile throws the exact same class of
+         IllegalArgumentException as the cacheDir bug above for every attachment - confirmed live:
+         this crashed the app the first time Share/Open-externally was tapped on a real attachment. -->
+    <files-path name="voucher_attachments" path="voucher_attachments/" />
 </paths>

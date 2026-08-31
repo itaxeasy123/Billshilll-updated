@@ -76,7 +76,10 @@ import java.util.UUID
  */
 class Phase5TestSuite {
 
-    private class Phase5AwareDao(delegate: AccountingDao) : AccountingDao by delegate {
+    /** D1b - made non-private so [D1bGstOnlyTestSuite] can reuse this same real GST-transaction-
+     * tracking DAO wrapper instead of duplicating it (this project's "reuse over duplication" rule) -
+     * zero behavior change, visibility only. */
+    class Phase5AwareDao(delegate: AccountingDao) : AccountingDao by delegate {
         private val gstTransactions = mutableListOf<GstTransactionEntity>()
         private val allocations = mutableListOf<SettlementAllocationEntity>()
         private val filingPeriods = LinkedHashMap<String, GstFilingPeriodEntity>()
@@ -88,6 +91,9 @@ class Phase5TestSuite {
         override suspend fun getGstTransactionsForVoucher(voucherId: String) = gstTransactions.filter { it.voucherId == voucherId }
         override suspend fun getGstTransactionsForCompanyFY(companyId: String, fyId: String) =
             gstTransactions.filter { it.companyId == companyId && it.financialYearId == fyId }
+        // D1b - the only way to find a GST-only transaction's lines (voucherId is always null there).
+        override suspend fun getGstTransactionsByGroupId(companyId: String, groupId: String) =
+            gstTransactions.filter { it.companyId == companyId && it.transactionGroupId == groupId }.sortedBy { it.lineOrder }
         override suspend fun insertGstTransactions(transactions: List<GstTransactionEntity>) { gstTransactions += transactions }
 
         override suspend fun getAllocationsForInvoice(invoiceVoucherId: String) = allocations.filter { it.invoiceVoucherId == invoiceVoucherId }
@@ -344,7 +350,8 @@ class Phase5TestSuite {
             companyId = companyId, financialYearId = fyId,
             customerLedgerId = "LED_DEBTOR", customerGstin = "27AAAAA0000A1Z5",
             companyStateCode = "27", placeOfSupply = "27",
-            lines = listOf(line("ITEM_A", 1, 1000_00L, 18.0))
+            lines = listOf(line("ITEM_A", 1, 1000_00L, 18.0)),
+            date = java.time.LocalDate.of(2026, 5, 10), partyGstRegistrationStatus = null
         )
         assertEquals(1, result.size)
         assertNull(result.first().voucherId)
@@ -361,7 +368,8 @@ class Phase5TestSuite {
             companyId = companyId, financialYearId = fyId,
             customerLedgerId = "LED_DEBTOR", customerGstin = "27AAAAA0000A1Z5",
             companyStateCode = "27", placeOfSupply = "27",
-            lines = listOf(line("ITEM_A", 10, 100_00L, gstRate = 5.0), line("ITEM_B", 5, 200_00L, gstRate = 28.0))
+            lines = listOf(line("ITEM_A", 10, 100_00L, gstRate = 5.0), line("ITEM_B", 5, 200_00L, gstRate = 28.0)),
+            date = java.time.LocalDate.of(2026, 5, 10), partyGstRegistrationStatus = null
         )
         val totalTax = result.fold(Money.ZERO) { acc, gt -> acc + gt.cgst + gt.sgst + gt.igst }
         assertEquals(330_00L, totalTax.paise)
@@ -375,7 +383,8 @@ class Phase5TestSuite {
             companyId = companyId, financialYearId = fyId,
             customerLedgerId = "LED_DEBTOR", customerGstin = "29AAAAA0000A1Z5",
             companyStateCode = "27", placeOfSupply = "29",
-            lines = listOf(line("ITEM_A", 1, 1000_00L, 18.0))
+            lines = listOf(line("ITEM_A", 1, 1000_00L, 18.0)),
+            date = java.time.LocalDate.of(2026, 5, 10), partyGstRegistrationStatus = null
         )
         val gt = result.first()
         assertEquals(180_00L, gt.igst.paise)
@@ -395,7 +404,8 @@ class Phase5TestSuite {
         val result = TradingWorkflowEngine.buildGstOnlySale(
             companyId = companyId, financialYearId = fyId,
             customerLedgerId = "LED_DEBTOR", customerGstin = "27AAAAA0000A1Z5",
-            companyStateCode = "27", placeOfSupply = "27", lines = lines
+            companyStateCode = "27", placeOfSupply = "27", lines = lines,
+            date = java.time.LocalDate.of(2026, 5, 10), partyGstRegistrationStatus = null
         )
         assertEquals(4, result.size)
         val taxable = result.first { it.itemId == "ITEM_TAXABLE" }
@@ -421,7 +431,8 @@ class Phase5TestSuite {
             companyId = companyId, financialYearId = fyId,
             customerLedgerId = "LED_DEBTOR", customerGstin = "29AAAAA0000A1Z5",
             companyStateCode = "27", placeOfSupply = "29",
-            lines = listOf(line("ITEM_A", 1, 1000_00L, 18.0, hsn = "998313"))
+            lines = listOf(line("ITEM_A", 1, 1000_00L, 18.0, hsn = "998313")),
+            date = java.time.LocalDate.of(2026, 5, 10), partyGstRegistrationStatus = null
         )
         val gt = result.first()
         assertEquals("29", gt.placeOfSupply)
@@ -612,6 +623,7 @@ class Phase5TestSuite {
 
         val note = TradingWorkflowEngine.buildNote(
             noteVoucherId = "V_CRN",
+            noteVoucherType = VoucherType.CREDIT_NOTE,
             originalJournalItems = originalJournalItemsSnapshot.map {
                 JournalItem(it.itemId, it.voucherId, it.companyId, it.financialYearId, it.ledgerId, "", it.type, Money.fromPaise(it.amountPaise), it.narration, it.lineOrder)
             },
@@ -664,6 +676,7 @@ class Phase5TestSuite {
 
         val note = TradingWorkflowEngine.buildNote(
             noteVoucherId = "V_DRN",
+            noteVoucherType = VoucherType.DEBIT_NOTE,
             originalJournalItems = originalJournalItemsSnapshot.map {
                 JournalItem(it.itemId, it.voucherId, it.companyId, it.financialYearId, it.ledgerId, "", it.type, Money.fromPaise(it.amountPaise), it.narration, it.lineOrder)
             },
@@ -683,6 +696,161 @@ class Phase5TestSuite {
         val summary = repo.generateGSTSummary(companyId, fyId)
         assertEquals(0L, summary.totalTaxableInward.paise)
         assertEquals(0L, summary.totalTaxInwardITC.paise)
+    }
+
+    // ==========================================
+    // C2. GST FACT VOUCHERTYPE HARDENING (Rule 32A) - buildNote() must stamp the NOTE's own
+    // VoucherType onto its copied GST rows, never inherit the original Sale/Purchase's.
+    // ==========================================
+    @Test
+    fun c3_SaleGstRow_CarriesVoucherTypeSales() = runBlocking {
+        val dao = freshDao()
+        dao.seedCompany()
+        dao.seedTradingLedgers()
+        dao.insertStockItem(stockItem("ITEM_A", openingQty = 100_000L))
+        val sale = TradingWorkflowEngine.buildSale("V_SAL", companyId, fyId, "LED_DEBTOR", "Cust", "", "LED_SALES", "Sales", "27", "27", listOf(line("ITEM_A", 1, 100_00L, 18.0)), gstLedgerRefs(companyId), "LED_RO", "Round Off")
+        postResult(dao, "V_SAL", VoucherType.SALES, sale)
+        val rows = dao.getGstTransactionsForVoucher("V_SAL")
+        assertTrue(rows.isNotEmpty())
+        assertTrue("Every Sale GST row must carry voucherType SALES", rows.all { it.voucherType == VoucherType.SALES })
+    }
+
+    @Test
+    fun c4_PurchaseGstRow_CarriesVoucherTypePurchase() = runBlocking {
+        val dao = freshDao()
+        dao.seedCompany()
+        dao.seedTradingLedgers()
+        dao.insertStockItem(stockItem("ITEM_A"))
+        val purchase = TradingWorkflowEngine.buildPurchase("V_PUR", companyId, fyId, "LED_CREDITOR", "Supp", "", "LED_PURCHASE", "Purchase", "27", "27", listOf(line("ITEM_A", 10, 500_00L, 18.0)), gstLedgerRefs(companyId), "LED_RO", "Round Off")
+        postResult(dao, "V_PUR", VoucherType.PURCHASE, purchase)
+        val rows = dao.getGstTransactionsForVoucher("V_PUR")
+        assertTrue(rows.isNotEmpty())
+        assertTrue("Every Purchase GST row must carry voucherType PURCHASE", rows.all { it.voucherType == VoucherType.PURCHASE })
+    }
+
+    @Test
+    fun c5_CreditNoteGstRow_CarriesVoucherTypeCreditNote_NotSales() = runBlocking {
+        val dao = freshDao()
+        dao.seedCompany()
+        dao.seedTradingLedgers()
+        dao.insertStockItem(stockItem("ITEM_A", openingQty = 100_000L))
+        val sale = TradingWorkflowEngine.buildSale("V_SAL", companyId, fyId, "LED_DEBTOR", "Cust", "", "LED_SALES", "Sales", "27", "27", listOf(line("ITEM_A", 4, 800_00L, 18.0)), gstLedgerRefs(companyId), "LED_RO", "Round Off")
+        postResult(dao, "V_SAL", VoucherType.SALES, sale)
+
+        val originalGst = dao.getGstTransactionsForVoucher("V_SAL")
+        val note = TradingWorkflowEngine.buildNote(
+            noteVoucherId = "V_CRN",
+            noteVoucherType = VoucherType.CREDIT_NOTE,
+            originalJournalItems = dao.getJournalItemsForVoucherSync("V_SAL").map {
+                JournalItem(it.itemId, it.voucherId, it.companyId, it.financialYearId, it.ledgerId, "", it.type, Money.fromPaise(it.amountPaise), it.narration, it.lineOrder)
+            },
+            originalStockLines = dao.getStockLinesForVoucher("V_SAL").map {
+                VoucherStockLine(it.lineId, it.voucherId, it.companyId, it.financialYearId, it.itemId, "", it.direction, Quantity(it.quantityRaw), Money.fromPaise(it.ratePaise), Money.fromPaise(it.amountPaise), it.lineOrder)
+            },
+            originalGstTransactions = originalGst.map {
+                GstTransaction(it.gstTransactionId, it.companyId, it.financialYearId, it.voucherId, it.voucherType, it.partyLedgerId, it.partyGstin, it.placeOfSupply, it.supplyType, it.itemId, it.hsnSacCode, it.quantityRaw?.let { q -> Quantity(q) }, Money.fromPaise(it.taxableAmountPaise), it.gstRatePercent, Money.fromPaise(it.cgstPaise), Money.fromPaise(it.sgstPaise), Money.fromPaise(it.igstPaise), Money.fromPaise(it.cessPaise), it.direction, it.lineOrder)
+            }
+        )
+        postResult(dao, "V_CRN", VoucherType.CREDIT_NOTE, note, refVoucherId = "V_SAL")
+
+        val noteRows = dao.getGstTransactionsForVoucher("V_CRN")
+        assertTrue(noteRows.isNotEmpty())
+        assertTrue("A Credit Note's GST rows must carry voucherType CREDIT_NOTE, not the original Sale's SALES", noteRows.all { it.voucherType == VoucherType.CREDIT_NOTE })
+        // Reversal amounts/direction must still be exactly negated, unchanged by this fix.
+        assertEquals(originalGst.sumOf { it.taxableAmountPaise }, -noteRows.sumOf { it.taxableAmountPaise })
+        assertTrue(noteRows.all { it.direction == originalGst.first().direction })
+    }
+
+    @Test
+    fun c6_DebitNoteGstRow_CarriesVoucherTypeDebitNote_NotPurchase() = runBlocking {
+        val dao = freshDao()
+        dao.seedCompany()
+        dao.seedTradingLedgers()
+        dao.insertStockItem(stockItem("ITEM_A"))
+        val purchase = TradingWorkflowEngine.buildPurchase("V_PUR", companyId, fyId, "LED_CREDITOR", "Supp", "", "LED_PURCHASE", "Purchase", "27", "27", listOf(line("ITEM_A", 10, 500_00L, 18.0)), gstLedgerRefs(companyId), "LED_RO", "Round Off")
+        postResult(dao, "V_PUR", VoucherType.PURCHASE, purchase)
+
+        val originalGst = dao.getGstTransactionsForVoucher("V_PUR")
+        val note = TradingWorkflowEngine.buildNote(
+            noteVoucherId = "V_DRN",
+            noteVoucherType = VoucherType.DEBIT_NOTE,
+            originalJournalItems = dao.getJournalItemsForVoucherSync("V_PUR").map {
+                JournalItem(it.itemId, it.voucherId, it.companyId, it.financialYearId, it.ledgerId, "", it.type, Money.fromPaise(it.amountPaise), it.narration, it.lineOrder)
+            },
+            originalStockLines = dao.getStockLinesForVoucher("V_PUR").map {
+                VoucherStockLine(it.lineId, it.voucherId, it.companyId, it.financialYearId, it.itemId, "", it.direction, Quantity(it.quantityRaw), Money.fromPaise(it.ratePaise), Money.fromPaise(it.amountPaise), it.lineOrder)
+            },
+            originalGstTransactions = originalGst.map {
+                GstTransaction(it.gstTransactionId, it.companyId, it.financialYearId, it.voucherId, it.voucherType, it.partyLedgerId, it.partyGstin, it.placeOfSupply, it.supplyType, it.itemId, it.hsnSacCode, it.quantityRaw?.let { q -> Quantity(q) }, Money.fromPaise(it.taxableAmountPaise), it.gstRatePercent, Money.fromPaise(it.cgstPaise), Money.fromPaise(it.sgstPaise), Money.fromPaise(it.igstPaise), Money.fromPaise(it.cessPaise), it.direction, it.lineOrder)
+            }
+        )
+        postResult(dao, "V_DRN", VoucherType.DEBIT_NOTE, note, refVoucherId = "V_PUR")
+
+        val noteRows = dao.getGstTransactionsForVoucher("V_DRN")
+        assertTrue(noteRows.isNotEmpty())
+        assertTrue("A Debit Note's GST rows must carry voucherType DEBIT_NOTE, not the original Purchase's PURCHASE", noteRows.all { it.voucherType == VoucherType.DEBIT_NOTE })
+        assertEquals(originalGst.sumOf { it.taxableAmountPaise }, -noteRows.sumOf { it.taxableAmountPaise })
+        assertTrue(noteRows.all { it.direction == originalGst.first().direction })
+    }
+
+    // ==========================================
+    // C3. GST BOUNDARY (Phase 32) - Receipt/Payment/Contra/Journal must never create a
+    // GstTransaction, even though `seedCompany()` defaults Company.gstEnabled to true.
+    // ==========================================
+    @Test
+    fun c7_Receipt_CreatesNoGstTransaction() = runBlocking {
+        val dao = freshDao()
+        dao.seedCompany()
+        dao.seedTradingLedgers()
+        assertTrue(dao.getCompanyById(companyId)!!.gstEnabled)
+        val receipt = VoucherEntity("V_RCT", companyId, fyId, "RCT-0001", VoucherType.RECEIPT, "2026-05-12", "", "", 1000_00L, true, false, SyncState.PENDING, 0L, 0L, "TESTER", "", false)
+        VoucherPostingEngine.post(dao, receipt, listOf(
+            JournalItemEntity("I1", "V_RCT", companyId, fyId, "LED_BANK", DrCr.DEBIT, 1000_00L, "", 1),
+            JournalItemEntity("I2", "V_RCT", companyId, fyId, "LED_DEBTOR", DrCr.CREDIT, 1000_00L, "", 2)
+        ), "IK_RCT", "TESTER")
+        assertTrue("Receipt must never create a GstTransaction, even with gstEnabled=true", dao.getGstTransactionsForVoucher("V_RCT").isEmpty())
+    }
+
+    @Test
+    fun c8_Payment_CreatesNoGstTransaction() = runBlocking {
+        val dao = freshDao()
+        dao.seedCompany()
+        dao.seedTradingLedgers()
+        assertTrue(dao.getCompanyById(companyId)!!.gstEnabled)
+        val payment = VoucherEntity("V_PMT", companyId, fyId, "PMT-0001", VoucherType.PAYMENT, "2026-05-12", "", "", 1000_00L, true, false, SyncState.PENDING, 0L, 0L, "TESTER", "", false)
+        VoucherPostingEngine.post(dao, payment, listOf(
+            JournalItemEntity("I1", "V_PMT", companyId, fyId, "LED_CREDITOR", DrCr.DEBIT, 1000_00L, "", 1),
+            JournalItemEntity("I2", "V_PMT", companyId, fyId, "LED_BANK", DrCr.CREDIT, 1000_00L, "", 2)
+        ), "IK_PMT", "TESTER")
+        assertTrue("Payment must never create a GstTransaction, even with gstEnabled=true", dao.getGstTransactionsForVoucher("V_PMT").isEmpty())
+    }
+
+    @Test
+    fun c9_Contra_CreatesNoGstTransaction() = runBlocking {
+        val dao = freshDao()
+        dao.seedCompany()
+        dao.seedTradingLedgers()
+        assertTrue(dao.getCompanyById(companyId)!!.gstEnabled)
+        val contra = VoucherEntity("V_CTR", companyId, fyId, "CTR-0001", VoucherType.CONTRA, "2026-05-12", "", "", 500_00L, true, false, SyncState.PENDING, 0L, 0L, "TESTER", "", false)
+        VoucherPostingEngine.post(dao, contra, listOf(
+            JournalItemEntity("I1", "V_CTR", companyId, fyId, "LED_CASH", DrCr.DEBIT, 500_00L, "", 1),
+            JournalItemEntity("I2", "V_CTR", companyId, fyId, "LED_BANK", DrCr.CREDIT, 500_00L, "", 2)
+        ), "IK_CTR", "TESTER")
+        assertTrue("Contra must never create a GstTransaction, even with gstEnabled=true", dao.getGstTransactionsForVoucher("V_CTR").isEmpty())
+    }
+
+    @Test
+    fun c10_Journal_CreatesNoGstTransaction() = runBlocking {
+        val dao = freshDao()
+        dao.seedCompany()
+        dao.seedTradingLedgers()
+        assertTrue(dao.getCompanyById(companyId)!!.gstEnabled)
+        val journal = VoucherEntity("V_JRN", companyId, fyId, "JRN-0001", VoucherType.JOURNAL, "2026-05-12", "", "", 200_00L, true, false, SyncState.PENDING, 0L, 0L, "TESTER", "", false)
+        VoucherPostingEngine.post(dao, journal, listOf(
+            JournalItemEntity("I1", "V_JRN", companyId, fyId, "LED_CAPITAL", DrCr.DEBIT, 200_00L, "", 1),
+            JournalItemEntity("I2", "V_JRN", companyId, fyId, "LED_CASH", DrCr.CREDIT, 200_00L, "", 2)
+        ), "IK_JRN", "TESTER")
+        assertTrue("Journal must never create a GstTransaction, even with gstEnabled=true", dao.getGstTransactionsForVoucher("V_JRN").isEmpty())
     }
 
     // ==========================================

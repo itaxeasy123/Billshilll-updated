@@ -23,7 +23,8 @@ enum class ExportType {
 object ExportFormatSupport {
     private val TABULAR_TYPES = setOf(
         ExportType.VOUCHER, ExportType.PARTY, ExportType.LEDGER,
-        ExportType.TRIAL_BALANCE, ExportType.OUTSTANDING, ExportType.GST_SUMMARY, ExportType.GST_TRANSACTIONS
+        ExportType.TRIAL_BALANCE, ExportType.PROFIT_AND_LOSS, ExportType.BALANCE_SHEET,
+        ExportType.OUTSTANDING, ExportType.GST_SUMMARY, ExportType.GST_TRANSACTIONS
     )
 
     fun supports(exportType: ExportType, format: ExportFormat): Boolean = when (format) {

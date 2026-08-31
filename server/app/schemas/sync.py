@@ -55,6 +55,20 @@ class SyncGstTransactionDto(BaseModel):
     cessPaise: int = 0
     direction: str
     lineOrder: int = 0
+    # D1b (GST-Only Purchase + Sales/Purchase Return + GST Fact Hardening) - optional at the schema
+    # level ONLY for backward compatibility with an already-queued pre-D1b event, mirroring
+    # voucherType's own precedent above. Defaults reproduce every such event's actual real
+    # behavior (RCM/Taxable did not exist for GST-only before this).
+    chargeType: str = "FORWARD_CHARGE"
+    supplyNature: str = "NORMAL"
+    # A missing/blank value falls back to this line's own gstTransactionId server-side (a genuine
+    # single-row group) - never fabricated. See gst_transaction_commands.py.
+    transactionGroupId: str | None = None
+    # None for the accounting path (unchanged - its real date is SyncVoucherDto.date); always a
+    # real ISO-8601 value for the GST-only path.
+    transactionDate: str | None = None
+    # None means UNKNOWN, never guessed.
+    partyGstRegistrationStatus: str | None = None
 
 
 class SyncSettlementDto(BaseModel):

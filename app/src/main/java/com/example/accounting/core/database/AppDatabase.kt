@@ -21,6 +21,10 @@ import com.example.accounting.data.local.entity.DocumentTemplateEntity
 import com.example.accounting.data.local.entity.FinancialYearEntity
 import com.example.accounting.data.local.entity.GroupEntity
 import com.example.accounting.data.local.entity.GstFilingPeriodEntity
+import com.example.accounting.data.local.entity.GstReturnArtifactEntity
+import com.example.accounting.data.local.entity.GstReturnEntity
+import com.example.accounting.data.local.entity.GstReturnSectionEntity
+import com.example.accounting.data.local.entity.GstReturnSubmissionEntity
 import com.example.accounting.data.local.entity.GstTransactionEntity
 import com.example.accounting.data.local.entity.IndividualProfileEntity
 import com.example.accounting.data.local.entity.InvoiceEntity
@@ -81,9 +85,13 @@ import com.example.accounting.data.local.entity.VoucherStockLineEntity
         VoucherDraftLineEntity::class,
         VoucherDocumentReferenceEntity::class,
         CompanySubscriptionEntity::class,
-        BankUpiProfileEntity::class
+        BankUpiProfileEntity::class,
+        GstReturnEntity::class,
+        GstReturnArtifactEntity::class,
+        GstReturnSectionEntity::class,
+        GstReturnSubmissionEntity::class
     ],
-    version = 13,
+    version = 19,
     exportSchema = false
 )
 @TypeConverters(RoomConverters::class)
@@ -870,6 +878,210 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
-        val ALL_MIGRATIONS: Array<Migration> = arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13)
+        /**
+         * Rule 33 (GST Return Dashboard & Filing Foundation) - adds the company's own GST scheme
+         * column (defaulting every pre-existing company to REGULAR, the ordinary scheme - see
+         * [com.example.accounting.domain.company.Company.gstScheme]) and the four new tables the
+         * return lifecycle needs. No existing table's columns are touched.
+         */
+        val MIGRATION_13_14 = object : Migration(13, 14) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE companies ADD COLUMN gstScheme TEXT NOT NULL DEFAULT 'REGULAR'")
+
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `gst_returns` (
+                        `gstReturnId` TEXT NOT NULL,
+                        `companyId` TEXT NOT NULL,
+                        `financialYearId` TEXT NOT NULL,
+                        `fyCode` TEXT NOT NULL,
+                        `quarter` TEXT NOT NULL,
+                        `month` INTEGER,
+                        `periodKey` TEXT NOT NULL,
+                        `scheme` TEXT NOT NULL,
+                        `returnType` TEXT NOT NULL,
+                        `periodicity` TEXT NOT NULL,
+                        `filingMode` TEXT NOT NULL,
+                        `status` TEXT NOT NULL,
+                        `createdAt` INTEGER NOT NULL,
+                        `updatedAt` INTEGER NOT NULL,
+                        `submittedAt` INTEGER,
+                        `acknowledgementNumber` TEXT,
+                        `errorCode` TEXT,
+                        `errorMessage` TEXT,
+                        `latestRequestArtifactId` TEXT,
+                        `latestResponseArtifactId` TEXT,
+                        `schemaVersion` TEXT NOT NULL,
+                        PRIMARY KEY(`gstReturnId`),
+                        FOREIGN KEY(`companyId`) REFERENCES `companies`(`companyId`) ON UPDATE NO ACTION ON DELETE CASCADE,
+                        FOREIGN KEY(`financialYearId`) REFERENCES `financial_years`(`financialYearId`) ON UPDATE NO ACTION ON DELETE CASCADE
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_gst_returns_companyId` ON `gst_returns` (`companyId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_gst_returns_financialYearId` ON `gst_returns` (`financialYearId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_gst_returns_companyId_periodKey_returnType_scheme` ON `gst_returns` (`companyId`, `periodKey`, `returnType`, `scheme`)")
+
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `gst_return_artifacts` (
+                        `artifactId` TEXT NOT NULL,
+                        `gstReturnId` TEXT NOT NULL,
+                        `artifactType` TEXT NOT NULL,
+                        `schemaVersion` TEXT NOT NULL,
+                        `jsonContent` TEXT NOT NULL,
+                        `createdAt` INTEGER NOT NULL,
+                        PRIMARY KEY(`artifactId`),
+                        FOREIGN KEY(`gstReturnId`) REFERENCES `gst_returns`(`gstReturnId`) ON UPDATE NO ACTION ON DELETE CASCADE
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_gst_return_artifacts_gstReturnId` ON `gst_return_artifacts` (`gstReturnId`)")
+
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `gst_return_sections` (
+                        `sectionId` TEXT NOT NULL,
+                        `gstReturnId` TEXT NOT NULL,
+                        `sectionKey` TEXT NOT NULL,
+                        `status` TEXT NOT NULL,
+                        `resultDataJson` TEXT,
+                        `errorsJson` TEXT,
+                        `updatedAt` INTEGER NOT NULL,
+                        PRIMARY KEY(`sectionId`),
+                        FOREIGN KEY(`gstReturnId`) REFERENCES `gst_returns`(`gstReturnId`) ON UPDATE NO ACTION ON DELETE CASCADE
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_gst_return_sections_gstReturnId` ON `gst_return_sections` (`gstReturnId`)")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_gst_return_sections_gstReturnId_sectionKey` ON `gst_return_sections` (`gstReturnId`, `sectionKey`)")
+
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `gst_return_submissions` (
+                        `submissionId` TEXT NOT NULL,
+                        `gstReturnId` TEXT NOT NULL,
+                        `attemptNumber` INTEGER NOT NULL,
+                        `requestArtifactId` TEXT,
+                        `responseArtifactId` TEXT,
+                        `status` TEXT NOT NULL,
+                        `acknowledgementNumber` TEXT,
+                        `errorCode` TEXT,
+                        `errorMessage` TEXT,
+                        `submittedAt` INTEGER NOT NULL,
+                        `respondedAt` INTEGER,
+                        PRIMARY KEY(`submissionId`),
+                        FOREIGN KEY(`gstReturnId`) REFERENCES `gst_returns`(`gstReturnId`) ON UPDATE NO ACTION ON DELETE CASCADE
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_gst_return_submissions_gstReturnId` ON `gst_return_submissions` (`gstReturnId`)")
+            }
+        }
+
+        /**
+         * Rule 33 follow-up - adds the company's filing-frequency column (Monthly/Quarterly for a
+         * REGULAR company's QRMP choice - see [com.example.accounting.domain.company.Company.gstFilingFrequency]).
+         * Defaulting every pre-existing company to MONTHLY reproduces prior behavior exactly, since
+         * QRMP never existed as an option before this. GstScheme.QRMP (a since-removed enum value)
+         * is never written by any app code path going forward; [RoomConverters.toGstScheme]'s own
+         * try/catch already falls back to REGULAR for any stray value it cannot parse, so no data
+         * migration of the `scheme` column itself is needed.
+         */
+        val MIGRATION_14_15 = object : Migration(14, 15) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE companies ADD COLUMN gstFilingFrequency TEXT NOT NULL DEFAULT 'MONTHLY'")
+            }
+        }
+
+        /**
+         * PIN-code address lookup (Profile Wizard follow-up) - adds structured City/State/
+         * Country/PinCode columns to `business_profiles`/`individual_profiles`, additive
+         * alongside the existing free-text `address` column (never replacing it). Plain nullable-
+         * default column adds, no table rebuild needed. Every pre-existing profile row reads back
+         * empty strings for these - never guessed from `address` text or any other source.
+         */
+        val MIGRATION_15_16 = object : Migration(15, 16) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE business_profiles ADD COLUMN pinCode TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE business_profiles ADD COLUMN city TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE business_profiles ADD COLUMN state TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE business_profiles ADD COLUMN country TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE individual_profiles ADD COLUMN pinCode TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE individual_profiles ADD COLUMN city TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE individual_profiles ADD COLUMN state TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE individual_profiles ADD COLUMN country TEXT NOT NULL DEFAULT ''")
+            }
+        }
+
+        /**
+         * Phase 7J-B.2 — a database-level guarantee against a duplicate voucher attachment: the
+         * same `(voucherId, documentAssetId)` pair can never be linked twice, while the same
+         * `documentAssetId` remains freely attachable to a *different* voucher (the index is
+         * composite, not on `documentAssetId` alone). Pure `CREATE UNIQUE INDEX` - no column
+         * added, no table rebuild, no existing row can violate it (the table has never had a
+         * production write path before this phase).
+         */
+        val MIGRATION_16_17 = object : Migration(16, 17) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_voucher_document_references_voucherId_documentAssetId ON voucher_document_references(voucherId, documentAssetId)")
+            }
+        }
+
+        /**
+         * D1a (Company Mode + Account-Only Sale/Purchase) - one new column on `companies`,
+         * `gstOperatingMode`, backfilled from each company's own existing `gstEnabled` value
+         * rather than a single blanket default, per Invariant 21 (no destructive/guessed
+         * migration): a company that already had GST disabled (`gstEnabled = 0`) becomes
+         * `ACCOUNT_ONLY`; every other company (the default, `gstEnabled = 1`) becomes
+         * `ACCOUNT_WITH_GST`, reproducing its actual prior behavior exactly rather than assuming
+         * one. No column dropped, renamed, or retyped; no voucher/ledger/GST-transaction/stock
+         * table touched - this is a company-configuration-only change, and per this migration's
+         * own scope, mode never rewrites, recalculates, or reposts any existing transaction.
+         */
+        val MIGRATION_17_18 = object : Migration(17, 18) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE companies ADD COLUMN gstOperatingMode TEXT NOT NULL DEFAULT 'ACCOUNT_WITH_GST'")
+                db.execSQL("UPDATE companies SET gstOperatingMode = 'ACCOUNT_ONLY' WHERE gstEnabled = 0")
+            }
+        }
+
+        /**
+         * D1b (GST-Only Purchase + Sales/Purchase Return + GST Fact Hardening) - four new columns
+         * on `gst_transactions`, all plain additive `ADD COLUMN`s (no rebuild needed, unlike
+         * [MIGRATION_10_11]'s voucherId relaxation):
+         *
+         * - `supplyNature` (NOT NULL, default 'NORMAL'): backfilled from each row's own existing
+         *   `supplyType` where that's unambiguous (INTRA_STATE/INTER_STATE -> NORMAL, EXPORT ->
+         *   EXPORT, EXEMPT -> EXEMPT) - a real, disclosed limitation: `supplyType` has always
+         *   collapsed EXEMPT and NIL_RATED into one value, so a pre-existing EXEMPT row cannot be
+         *   distinguished from a pre-existing NIL_RATED one after the fact. This backfill is the
+         *   closest honest approximation available, not a guess presented as certain.
+         * - `transactionGroupId` (NOT NULL, default ''): backfilled to `COALESCE(voucherId,
+         *   gstTransactionId)` - the real voucherId for every accounting-integrated row (correct,
+         *   unambiguous), or the row's own id as a single-row group for any pre-existing GST-only
+         *   row (none exist in production per the D1a-era audit; still the honest fallback).
+         * - `transactionDate` (nullable TEXT, ISO-8601): left NULL for every existing row - every
+         *   existing row is accounting-integrated and already has an unambiguous date via the
+         *   joined `vouchers.date`, so nothing here needs backfilling or is lost.
+         * - `partyGstRegistrationStatus` (nullable TEXT): left NULL (UNKNOWN) for every existing
+         *   row - no historical snapshot of this ever existed before this migration, so `null` is
+         *   the only honest value, matching `ledgers.gstRegistrationStatus`'s own "null means
+         *   unknown, never guessed" convention (see `MIGRATION_11_12`).
+         */
+        val MIGRATION_18_19 = object : Migration(18, 19) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE gst_transactions ADD COLUMN supplyNature TEXT NOT NULL DEFAULT 'NORMAL'")
+                db.execSQL("UPDATE gst_transactions SET supplyNature = 'EXPORT' WHERE supplyType = 'EXPORT'")
+                db.execSQL("UPDATE gst_transactions SET supplyNature = 'EXEMPT' WHERE supplyType = 'EXEMPT'")
+                db.execSQL("ALTER TABLE gst_transactions ADD COLUMN transactionGroupId TEXT NOT NULL DEFAULT ''")
+                db.execSQL("UPDATE gst_transactions SET transactionGroupId = COALESCE(voucherId, gstTransactionId) WHERE transactionGroupId = ''")
+                db.execSQL("ALTER TABLE gst_transactions ADD COLUMN transactionDate TEXT")
+                db.execSQL("ALTER TABLE gst_transactions ADD COLUMN partyGstRegistrationStatus TEXT")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_gst_transactions_transactionGroupId ON gst_transactions(transactionGroupId)")
+            }
+        }
+
+        val ALL_MIGRATIONS: Array<Migration> = arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19)
     }
 }

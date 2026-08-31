@@ -268,6 +268,14 @@ class GstTransaction(Base):
     direction: Mapped[str] = mapped_column(String, index=True)  # OUTPUT / INPUT
     line_order: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[int] = mapped_column(Integer)
+    # D1b (GST-Only Purchase + Sales/Purchase Return + GST Fact Hardening) - mirrors the Android
+    # Room migration (18 -> 19) column-for-column; see migrations/versions/0007_gst_fact_hardening.py
+    # for the exact backfill semantics of each.
+    charge_type: Mapped[str] = mapped_column(String, default="FORWARD_CHARGE")
+    supply_nature: Mapped[str] = mapped_column(String, default="NORMAL")
+    transaction_group_id: Mapped[str] = mapped_column(String, default="", index=True)
+    transaction_date: Mapped[str | None] = mapped_column(String, nullable=True)
+    party_gst_registration_status: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
 class SettlementAllocation(Base):

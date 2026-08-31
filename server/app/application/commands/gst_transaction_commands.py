@@ -69,6 +69,10 @@ async def apply_gst_transaction_event(db: AsyncSession, event: SyncEvent) -> dic
     now = _now_ms()
     persisted_ids: list[str] = []
     for line in event.gstTransactions:
+        # D1b: a missing/blank transactionGroupId (an already-queued pre-D1b event) falls back to
+        # this line's own gstTransactionId - a genuine single-row group, never fabricated. Mirrors
+        # the Android migration's own COALESCE(voucher_id, gst_transaction_id) backfill exactly.
+        group_id = line.transactionGroupId or line.gstTransactionId
         db.add(
             GstTransaction(
                 gst_transaction_id=line.gstTransactionId,
@@ -92,6 +96,11 @@ async def apply_gst_transaction_event(db: AsyncSession, event: SyncEvent) -> dic
                 direction=line.direction,
                 line_order=line.lineOrder,
                 created_at=now,
+                charge_type=line.chargeType,
+                supply_nature=line.supplyNature,
+                transaction_group_id=group_id,
+                transaction_date=line.transactionDate,
+                party_gst_registration_status=line.partyGstRegistrationStatus,
             )
         )
         persisted_ids.append(line.gstTransactionId)

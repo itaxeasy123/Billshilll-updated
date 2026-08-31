@@ -30,9 +30,17 @@ sealed class AppRoute(val path: String, val title: String) {
     data class Parties(val role: String) : AppRoute("#parties/$role", "Parties")
 
     object Profile : AppRoute("#profile", "Profile & Business Setup")
+    object ProfileWizard : AppRoute("#profile-wizard", "Business Setup Wizard")
     object Subscription : AppRoute("#subscription", "Subscription")
     object DataTools : AppRoute("#data-tools", "Import & Scan")
     data class Search(val query: String = "") : AppRoute("#search/$query", "Search")
+
+    // Legal + Support drawer (Play Store readiness) - reached only from the new nav Drawer, never
+    // a bottom-nav tab, matching every other secondary route's own convention.
+    object About : AppRoute("#about", "About")
+    object PrivacyPolicy : AppRoute("#privacy-policy", "Privacy Policy")
+    object TermsAndConditions : AppRoute("#terms", "Terms & Conditions")
+    object Support : AppRoute("#support", "Support")
 
     companion object {
         fun fromHash(hash: String): AppRoute {
@@ -48,8 +56,13 @@ sealed class AppRoute(val path: String, val title: String) {
                 hash == "#purchases" -> Purchases
                 hash == "#money" -> Money
                 hash == "#profile" -> Profile
+                hash == "#profile-wizard" -> ProfileWizard
                 hash == "#subscription" -> Subscription
                 hash == "#data-tools" -> DataTools
+                hash == "#about" -> About
+                hash == "#privacy-policy" -> PrivacyPolicy
+                hash == "#terms" -> TermsAndConditions
+                hash == "#support" -> Support
                 else -> Dashboard
             }
         }

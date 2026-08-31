@@ -153,10 +153,35 @@ class Phase7JBVoucherManagementTestSuite {
         assertTrue(dao.getVouchersByCompany(companyId).first().isEmpty())
     }
 
+    // ==========================================
+    // Phase 7J-B.2 - Document Attachments (Slice 1: DAO/service infrastructure only, no UI)
+    // ==========================================
+
+    private fun voucherEntity(voucherId: String, forCompanyId: String = companyId) =
+        com.example.accounting.data.local.entity.VoucherEntity(
+            voucherId = voucherId, companyId = forCompanyId, financialYearId = fyId, voucherNumber = "JNL-0002",
+            voucherType = VoucherType.JOURNAL, date = "2026-06-15", referenceNumber = "", narration = "Seed voucher",
+            totalAmountPaise = 5_000_00L, isPosted = true, isCancelled = false,
+            syncState = com.example.accounting.domain.accounting.SyncState.PENDING, createdAt = 0L, updatedAt = 0L,
+            createdBy = "TEST", partyGstin = "", isGstApplicable = false
+        )
+
+    private fun documentAssetEntity(
+        assetId: String,
+        forCompanyId: String = companyId,
+        type: com.example.accounting.domain.rendering.DocumentAssetType = com.example.accounting.domain.rendering.DocumentAssetType.VOUCHER_ATTACHMENT
+    ) = com.example.accounting.data.local.entity.DocumentAssetEntity(
+        assetId = assetId, companyId = forCompanyId, type = type,
+        storageReference = "/data/user/0/com.example/files/voucher_attachments/$assetId.jpg",
+        checksum = "checksum_$assetId", mimeType = "image/jpeg", sizeBytes = 1024L, createdAt = 0L
+    )
+
     @Test
-    fun testAttachDocumentReference_persistsMetadataOnly() = runBlocking {
+    fun testAttachDocumentReference_validVoucherAndAsset_persists() = runBlocking {
         val dao = freshDao()
         dao.seedCompanyAndFy()
+        dao.insertVoucher(voucherEntity("VCH_1"))
+        dao.insertDocumentAsset(documentAssetEntity("ASSET_1"))
         val repository = AccountingRepository(dao, db = null)
         val service = VoucherManagementServiceImpl(dao, repository)
 
@@ -165,6 +190,233 @@ class Phase7JBVoucherManagementTestSuite {
         val refs = dao.getDocumentReferencesForVoucher(companyId, "VCH_1")
         assertEquals(1, refs.size)
         assertEquals("ASSET_1", refs.first().documentAssetId)
+    }
+
+    @Test
+    fun testAttachDocumentReference_missingVoucher_rejected() = runBlocking {
+        val dao = freshDao()
+        dao.seedCompanyAndFy()
+        dao.insertDocumentAsset(documentAssetEntity("ASSET_1"))
+        val repository = AccountingRepository(dao, db = null)
+        val service = VoucherManagementServiceImpl(dao, repository)
+
+        val result = service.attachDocumentReference(companyId, "VCH_NONEXISTENT", "ASSET_1")
+        assertTrue("A voucher that does not exist must never be attachable", result is AccountingResult.Failure)
+        assertTrue(dao.getDocumentReferencesForVoucher(companyId, "VCH_NONEXISTENT").isEmpty())
+    }
+
+    @Test
+    fun testAttachDocumentReference_missingAsset_rejected() = runBlocking {
+        val dao = freshDao()
+        dao.seedCompanyAndFy()
+        dao.insertVoucher(voucherEntity("VCH_1"))
+        val repository = AccountingRepository(dao, db = null)
+        val service = VoucherManagementServiceImpl(dao, repository)
+
+        val result = service.attachDocumentReference(companyId, "VCH_1", "ASSET_NONEXISTENT")
+        assertTrue("A document asset that does not exist must never be attachable", result is AccountingResult.Failure)
+        assertTrue(dao.getDocumentReferencesForVoucher(companyId, "VCH_1").isEmpty())
+    }
+
+    @Test
+    fun testAttachDocumentReference_crossCompanyVoucherAndAsset_rejected() = runBlocking {
+        val dao = freshDao()
+        dao.seedCompanyAndFy()
+        val otherCompanyId = "COMP_OTHER"
+        dao.seedCompanyAndFy(companyId = otherCompanyId, fyId = "FY_OTHER")
+        // Voucher belongs to companyId, asset belongs to otherCompanyId.
+        dao.insertVoucher(voucherEntity("VCH_1", forCompanyId = companyId))
+        dao.insertDocumentAsset(documentAssetEntity("ASSET_1", forCompanyId = otherCompanyId))
+        val repository = AccountingRepository(dao, db = null)
+        val service = VoucherManagementServiceImpl(dao, repository)
+
+        val result = service.attachDocumentReference(companyId, "VCH_1", "ASSET_1")
+        assertTrue("A cross-company voucher/asset pair must never be linkable", result is AccountingResult.Failure)
+        assertTrue(dao.getDocumentReferencesForVoucher(companyId, "VCH_1").isEmpty())
+
+        // Also verify the reverse is rejected: a Company-A caller must not link Company-B's own
+        // voucher to Company-B's own asset by passing Company-A's companyId.
+        dao.insertVoucher(voucherEntity("VCH_OTHER", forCompanyId = otherCompanyId))
+        val reverseResult = service.attachDocumentReference(companyId, "VCH_OTHER", "ASSET_1")
+        assertTrue(reverseResult is AccountingResult.Failure)
+    }
+
+    @Test
+    fun testAttachDocumentReference_exactDuplicate_isIdempotentNotDuplicated() = runBlocking {
+        val dao = freshDao()
+        dao.seedCompanyAndFy()
+        dao.insertVoucher(voucherEntity("VCH_1"))
+        dao.insertDocumentAsset(documentAssetEntity("ASSET_1"))
+        val repository = AccountingRepository(dao, db = null)
+        val service = VoucherManagementServiceImpl(dao, repository)
+
+        val first = service.attachDocumentReference(companyId, "VCH_1", "ASSET_1")
+        val second = service.attachDocumentReference(companyId, "VCH_1", "ASSET_1")
+        assertTrue(first is AccountingResult.Success)
+        assertTrue("Re-attaching the exact same (voucherId, documentAssetId) pair must succeed idempotently, never error", second is AccountingResult.Success)
+
+        val refs = dao.getDocumentReferencesForVoucher(companyId, "VCH_1")
+        assertEquals("Exactly one row must exist, never a second duplicate", 1, refs.size)
+    }
+
+    @Test
+    fun testAttachDocumentReference_sameAssetDifferentVouchers_bothAllowed() = runBlocking {
+        val dao = freshDao()
+        dao.seedCompanyAndFy()
+        dao.insertVoucher(voucherEntity("VCH_1"))
+        dao.insertVoucher(voucherEntity("VCH_2"))
+        dao.insertDocumentAsset(documentAssetEntity("ASSET_1"))
+        val repository = AccountingRepository(dao, db = null)
+        val service = VoucherManagementServiceImpl(dao, repository)
+
+        val toFirst = service.attachDocumentReference(companyId, "VCH_1", "ASSET_1")
+        val toSecond = service.attachDocumentReference(companyId, "VCH_2", "ASSET_1")
+        assertTrue(toFirst is AccountingResult.Success)
+        assertTrue("The same asset must be attachable to a different voucher", toSecond is AccountingResult.Success)
+
+        assertEquals(1, dao.getDocumentReferencesForVoucher(companyId, "VCH_1").size)
+        assertEquals(1, dao.getDocumentReferencesForVoucher(companyId, "VCH_2").size)
+    }
+
+    // ==========================================
+    // Phase 7J-B.2 Slice 2 - UI/ViewModel-facing behaviors, exercised at the service layer
+    // (AccountingViewModel itself extends AndroidViewModel and cannot be unit-tested without a
+    // working Robolectric Application context - currently broken in this environment, the same
+    // root cause behind the 5 known-failing Robolectric suites. Every one of these functions is a
+    // thin pass-through to VoucherManagementServiceImpl, so exercising the service directly is a
+    // faithful test of the same logic the ViewModel wraps.)
+    // ==========================================
+
+    @Test
+    fun testRemovingFromOneVoucher_leavesTheSameAssetAttachedToTheOtherVoucherUntouched() = runBlocking {
+        // Steps 13.6/13.7: same asset attached to two vouchers; removing from one must never
+        // affect the other.
+        val dao = freshDao()
+        dao.seedCompanyAndFy()
+        dao.insertVoucher(voucherEntity("VCH_1"))
+        dao.insertVoucher(voucherEntity("VCH_2"))
+        dao.insertDocumentAsset(documentAssetEntity("ASSET_1"))
+        val repository = AccountingRepository(dao, db = null)
+        val service = VoucherManagementServiceImpl(dao, repository)
+
+        service.attachDocumentReference(companyId, "VCH_1", "ASSET_1")
+        service.attachDocumentReference(companyId, "VCH_2", "ASSET_1")
+        val referenceOnVoucher1 = dao.getDocumentReferencesForVoucher(companyId, "VCH_1").first().referenceId
+
+        val removeResult = service.removeDocumentReference(companyId, referenceOnVoucher1)
+        assertTrue(removeResult is AccountingResult.Success)
+
+        assertTrue("Voucher 1's reference must be gone", dao.getDocumentReferencesForVoucher(companyId, "VCH_1").isEmpty())
+        assertEquals("Voucher 2's reference to the SAME asset must be completely unaffected", 1, dao.getDocumentReferencesForVoucher(companyId, "VCH_2").size)
+        assertEquals("The underlying asset itself must still exist", "ASSET_1", dao.getDocumentAssetById(companyId, "ASSET_1")?.assetId)
+    }
+
+    @Test
+    fun testGetAttachmentsForVoucher_afterAttachThenReload_showsExactlyOneRowNeverADuplicate() = runBlocking {
+        // Step 13.10: "no duplicate attachment appears after refresh" - simulates the ViewModel's
+        // loadVoucherAttachments()/reload-after-attach pattern by calling the same joined query
+        // twice, once before and once after a repeated attach attempt.
+        val dao = freshDao()
+        dao.seedCompanyAndFy()
+        dao.insertVoucher(voucherEntity("VCH_1"))
+        dao.insertDocumentAsset(documentAssetEntity("ASSET_1"))
+        val repository = AccountingRepository(dao, db = null)
+        val service = VoucherManagementServiceImpl(dao, repository)
+
+        service.attachDocumentReference(companyId, "VCH_1", "ASSET_1")
+        val afterFirstLoad = service.getAttachmentsForVoucher(companyId, "VCH_1")
+        assertEquals(1, afterFirstLoad.size)
+
+        // Simulates a UI double-tap / retried attach on the same file - the "reload" must still
+        // show exactly one row, never two.
+        service.attachDocumentReference(companyId, "VCH_1", "ASSET_1")
+        val afterSecondLoad = service.getAttachmentsForVoucher(companyId, "VCH_1")
+        assertEquals("Reloading after a repeated attach must never surface a duplicate row", 1, afterSecondLoad.size)
+    }
+
+    @Test
+    fun testRemoveDocumentReference_removesOnlyTheReference() = runBlocking {
+        val dao = freshDao()
+        dao.seedCompanyAndFy()
+        dao.insertVoucher(voucherEntity("VCH_1"))
+        dao.insertDocumentAsset(documentAssetEntity("ASSET_1"))
+        val repository = AccountingRepository(dao, db = null)
+        val service = VoucherManagementServiceImpl(dao, repository)
+        service.attachDocumentReference(companyId, "VCH_1", "ASSET_1")
+        val referenceId = dao.getDocumentReferencesForVoucher(companyId, "VCH_1").first().referenceId
+
+        val removeResult = service.removeDocumentReference(companyId, referenceId)
+        assertTrue(removeResult is AccountingResult.Success)
+
+        // 7: only the reference is gone.
+        assertTrue(dao.getDocumentReferencesForVoucher(companyId, "VCH_1").isEmpty())
+        // 8: the DocumentAsset row survives untouched.
+        assertEquals("ASSET_1", dao.getDocumentAssetById(companyId, "ASSET_1")?.assetId)
+        // 9: the voucher itself is untouched.
+        val voucher = dao.getVoucherById(companyId, "VCH_1")
+        assertTrue(voucher != null && !voucher.isCancelled && voucher.isPosted)
+        // 10: no JournalItems exist to affect - this attachment flow never touches journal_items at all.
+        assertTrue(dao.getJournalItemsForVoucherSync("VCH_1").isEmpty())
+    }
+
+    @Test
+    fun testRemoveDocumentReference_unknownReference_returnsFailure() = runBlocking {
+        val dao = freshDao()
+        dao.seedCompanyAndFy()
+        val repository = AccountingRepository(dao, db = null)
+        val service = VoucherManagementServiceImpl(dao, repository)
+
+        val result = service.removeDocumentReference(companyId, "NO_SUCH_REFERENCE")
+        assertTrue(result is AccountingResult.Failure)
+    }
+
+    @Test
+    fun testDocumentAssetType_voucherAttachment_persistsAndRoundTrips() = runBlocking {
+        val dao = freshDao()
+        dao.seedCompanyAndFy()
+        val repository = AccountingRepository(dao, db = null)
+
+        val created = repository.createDocumentAsset(
+            companyId, com.example.accounting.domain.rendering.DocumentAssetType.VOUCHER_ATTACHMENT,
+            "/data/user/0/com.example/files/voucher_attachments/receipt.jpg", "abc123", "image/jpeg", 2048L
+        )
+        assertTrue(created is AccountingResult.Success)
+        val assetId = (created as AccountingResult.Success).data.assetId
+
+        val fetched = repository.getDocumentAsset(companyId, assetId)
+        assertEquals(com.example.accounting.domain.rendering.DocumentAssetType.VOUCHER_ATTACHMENT, fetched?.type)
+    }
+
+    @Test
+    fun testAttachDocumentReference_existingAssetTypes_stillWork() = runBlocking {
+        // Backward-compatibility check: hardening attachDocumentReference must not disturb the
+        // pre-existing LOGO/SIGNATURE/etc. asset types - only VOUCHER_ATTACHMENT is new.
+        val dao = freshDao()
+        dao.seedCompanyAndFy()
+        dao.insertVoucher(voucherEntity("VCH_1"))
+        dao.insertDocumentAsset(documentAssetEntity("ASSET_LOGO", type = com.example.accounting.domain.rendering.DocumentAssetType.LOGO))
+        val repository = AccountingRepository(dao, db = null)
+        val service = VoucherManagementServiceImpl(dao, repository)
+
+        val result = service.attachDocumentReference(companyId, "VCH_1", "ASSET_LOGO")
+        assertTrue(result is AccountingResult.Success)
+    }
+
+    @Test
+    fun testGetAttachmentsForVoucher_joinsAssetMetadataInOneCall() = runBlocking {
+        val dao = freshDao()
+        dao.seedCompanyAndFy()
+        dao.insertVoucher(voucherEntity("VCH_1"))
+        dao.insertDocumentAsset(documentAssetEntity("ASSET_1"))
+        val repository = AccountingRepository(dao, db = null)
+        val service = VoucherManagementServiceImpl(dao, repository)
+        service.attachDocumentReference(companyId, "VCH_1", "ASSET_1")
+
+        val attachments = service.getAttachmentsForVoucher(companyId, "VCH_1")
+        assertEquals(1, attachments.size)
+        assertEquals("ASSET_1", attachments.first().documentAssetId)
+        assertEquals("image/jpeg", attachments.first().mimeType)
+        assertEquals(1024L, attachments.first().sizeBytes)
     }
 
     // ==========================================

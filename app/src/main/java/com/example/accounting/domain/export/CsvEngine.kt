@@ -87,6 +87,34 @@ fun TrialBalanceExportDto.toCsvRows(): List<List<String?>> = rows.map {
     )
 }
 
+fun ProfitAndLossExportDto.toCsvHeaders(): List<String> = listOf(
+    "companyName", "financialYearCode", "dateRange", "salesRevenuePaise", "directIncomesPaise",
+    "purchasesPaise", "directExpensesPaise", "grossProfitPaise", "indirectIncomesPaise", "indirectExpensesPaise",
+    "netProfitPaise", "isInventoryAware"
+)
+
+fun ProfitAndLossExportDto.toCsvRows(): List<List<String?>> = listOf(
+    listOf(
+        companyName, financialYearCode, dateRange, salesRevenuePaise.toString(), directIncomesPaise.toString(),
+        purchasesPaise.toString(), directExpensesPaise.toString(), grossProfitPaise.toString(),
+        indirectIncomesPaise.toString(), indirectExpensesPaise.toString(), netProfitPaise.toString(), isInventoryAware.toString()
+    )
+)
+
+fun BalanceSheetExportDto.toCsvHeaders(): List<String> = listOf(
+    "companyName", "financialYearCode", "asOfDate", "totalLiabilitiesPaise", "totalAssetsPaise", "isBalanced",
+    "capitalAccountsPaise", "loansLiabilitiesPaise", "currentLiabilitiesPaise", "fixedAssetsPaise",
+    "currentAssetsPaise", "sundryDebtorsPaise", "bankAccountsPaise", "cashInHandPaise", "stockInHandPaise"
+)
+
+fun BalanceSheetExportDto.toCsvRows(): List<List<String?>> = listOf(
+    listOf(
+        companyName, financialYearCode, asOfDate.toString(), totalLiabilitiesPaise.toString(), totalAssetsPaise.toString(), isBalanced.toString(),
+        capitalAccountsPaise.toString(), loansLiabilitiesPaise.toString(), currentLiabilitiesPaise.toString(), fixedAssetsPaise.toString(),
+        currentAssetsPaise.toString(), sundryDebtorsPaise.toString(), bankAccountsPaise.toString(), cashInHandPaise.toString(), stockInHandPaise.toString()
+    )
+)
+
 fun OutstandingExportDto.toCsvHeaders(): List<String> = listOf(
     "invoiceId", "invoiceNumber", "invoiceType", "partyId", "partyName", "voucherNumber",
     "date", "dueDate", "totalAmountPaise", "outstandingAmountPaise", "status", "daysOutstanding", "agingBucket"
